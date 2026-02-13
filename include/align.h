@@ -510,7 +510,7 @@ namespace align {
                    int kmer_size = 21, int window_size = 10,
                    int sketch_size = 2000, bool noncanonical = true,
                    int threads = 1, std::string msa_cmd = "",
-                   bool keep_first_length = false, bool keep_all_length = false);
+                   bool keep_length = false);
 
         // ------------------------------------------------------------------
         // 构造函数2：基于 Options 结构体初始化（推荐方式）
@@ -728,19 +728,7 @@ namespace align {
         int threads = 1;            // OpenMP 线程数（<=0 时通常表示让运行时决定；具体逻辑在 .cpp）
         std::string msa_cmd;        // 外部 MSA 命令模板（用于共识生成与插入序列 MSA）
 
-        // ------------------------------------------------------------------
-        // MSA 输出选项
-        // ------------------------------------------------------------------
-        // 说明：
-        // - keep_first_length：是否保持第一条序列（共识序列）的原始长度
-        //   * true：移除共识序列为 gap 的所有列
-        //   * false：保留所有列（包括共识序列的 gap）
-        // - keep_all_length：是否保持所有序列的原始长度（优先级低于 keep_first_length）
-        //   * true：移除插入 MSA 中共识序列为 gap 的列
-        //   * false：保留所有列
-        // ------------------------------------------------------------------
-        bool keep_first_length = false; // true：裁剪“共识为 gap 的列”，保持中心序列原始长度
-        bool keep_all_length = false;   // true：进一步裁剪“插入 MSA 中中心序列为 gap 的列”
+        bool keep_length = false; // true：裁剪“共识为 gap 的列”，保持中心序列原始长度
 
         // ------------------------------------------------------------------
         // MinHash 计算选项

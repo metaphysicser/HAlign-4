@@ -33,7 +33,7 @@ namespace align {
     // ------------------------------------------------------------------
     RefAligner::RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path, int kmer_size, int window_size,
                            int sketch_size, bool noncanonical, int threads, std::string msa_cmd,
-                           bool keep_first_length, bool keep_all_length)
+                           bool keep_length)
         : work_dir(work_dir),
           kmer_size(kmer_size),
           window_size(window_size),
@@ -41,8 +41,7 @@ namespace align {
           noncanonical(noncanonical),
           threads(threads),
           msa_cmd(msa_cmd),          // 这里是一次按值传参 + 成员拷贝/移动（由编译器决定 NRVO/移动），不是显式 std::move
-          keep_first_length(keep_first_length),
-          keep_all_length(keep_all_length)
+          keep_length(keep_length)
     {
         // 从文件读取参考序列并构建索引（每条 ref 计算 sketch/minimizer，供后续相似度筛选与 anchors 生成）
         seq_io::KseqReader reader(ref_fasta_path);
@@ -79,17 +78,10 @@ namespace align {
             batch_size
         );
 
-        if (keep_first_length)
-        {
-            // keep_first_length：直接用第一条参考序列作为“共识/中心序列”（保持长度策略由下游逻辑决定）
-            consensus_seq = ref_sequences.front();
-        }
-        else
-        {
-            // 默认：使用生成的共识序列内容
-            consensus_seq.id = "consensus";
-            consensus_seq.seq = std::move(consensus_string);
-        }
+
+        consensus_seq.id = "consensus";
+        consensus_seq.seq = std::move(consensus_string);
+
 
         // ------------------------------------------------------------------
         // 性能优化：预计算共识序列的 MinHash sketch 和 Minimizer 索引
@@ -140,8 +132,7 @@ namespace align {
             true,                       // noncanonical：是否使用非标准模式（固定为 true）
             opt.threads,                // threads：线程数（用于共识序列生成）
             opt.msa_cmd,                // msa_cmd：MSA 命令模板
-            opt.keep_first_length,      // keep_first_length：从 opt 提取
-            opt.keep_all_length         // keep_all_length：从 opt 提取
+            opt.keep_length      // keep_length：从 opt 提取
         )
     {
         // 委托构造函数已完成所有初始化工作（包括共识序列生成）
@@ -402,11 +393,18 @@ namespace align {
             &ref_minimizers[best_r],  // 使用对应参考序列的 minimizer
             &query_minimizer);
 
+        // keep-length single-ref: 如果没有插入，直接写入，如果有插入，保留和con的比对结果
+        // keep-length multi-ref: 如果没有插入，直接写入，如果有插入，保留和ref的比对结果
+        // non-keep-length single-ref: 如果没有插入，直接写入，如果有插入，保留和con的比对结果
+        // non-keep-length multi-ref: 如果没有插入，直接写入，如果有插入，保留和con的比对结果
 
-        // 4) 根据是否存在插入，决定写入哪个输出文件
-        if (!cigar::hasInsertion(initial_cigar)) {
-            // 无插入：直接写入普通文件
-            writeSamRecord(q, initial_cigar, best_ref.id, out);
+
+        if (keep_length) {
+            if (!cigar::hasInsertion(initial_cigar)) {
+                writeSamRecord(q, initial_cigar, best_ref.id, out);
+            } else {
+                writeSamRecord(q, initial_cigar, consensus_seq.id, out_insertion);
+            }
             return;
         }
 
@@ -422,7 +420,7 @@ namespace align {
         // - 对于大规模比对（10000+ queries），可节省数十秒到数分钟
         cigar::Cigar_t recheck_cigar;
 
-        if (best_ref.id == consensus_seq.id) {
+        if (ref_sequences.size() == 1) {
             // 如果最相似的参考就是共识序列，说明 query 已经与共识序列比对过了，无需重复比对
             // 直接使用初始比对结果（虽然可能有插入，但我们认为这是最终结果）
             recheck_cigar = initial_cigar;
@@ -439,16 +437,12 @@ namespace align {
         }
 
 
-        // 使用二次比对结果（如果失败则使用初始结果）
-        const cigar::Cigar_t& final_cigar = recheck_cigar.empty() ? initial_cigar : recheck_cigar;
-
-
 
         // 根据二次比对结果决定输出文件
-        if (cigar::hasInsertion(final_cigar)) {
-            writeSamRecord(q, final_cigar, consensus_seq.id, out_insertion);
+        if (cigar::hasInsertion(recheck_cigar)) {
+            writeSamRecord(q, recheck_cigar, consensus_seq.id, out_insertion);
         } else {
-            writeSamRecord(q, final_cigar, consensus_seq.id, out);
+            writeSamRecord(q, recheck_cigar, consensus_seq.id, out);
         }
 
     }
@@ -472,8 +466,8 @@ namespace align {
             throw std::runtime_error("RefAligner::alignQueryToRef: reference is empty");
         }
 
-        // batch_size==0 没有意义，这里兜底为 1
-        if (batch_size == 0) batch_size = 1;
+        // batch_size==0 没有意义，这里兜底为 2560
+        if (batch_size == 0) batch_size = 2560;
 
         // 线程数：
         // - threads<=0：尊重 OpenMP 默认（OMP_NUM_THREADS 或 runtime 配置）

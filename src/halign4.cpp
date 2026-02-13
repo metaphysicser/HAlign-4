@@ -188,9 +188,9 @@ int main(int argc, char** argv) {
             spdlog::info("Center sequence copied to: {}", consensus_unaligned_file.string());
         }
 
-        // 快速路径：如果总序列数 <= cons_n，且不启用 keep_first_length/keep_all_length，
+        // 快速路径：如果总序列数 <= cons_n，且不启用 keep_length，
         // 则无需 RefAligner 的“参考比对 + 合并”，直接对 cons_n 子集做一次 MSA 即可输出。
-        if (preproc_count <= opt.cons_n && opt.keep_first_length == false && opt.keep_all_length == false)
+        if (preproc_count <= opt.cons_n && opt.keep_length == false)
         {
             // 调用外部 MSA：consensus_unaligned_file -> consensus_aligned_file
             alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, opt.msa_cmd, opt.threads);
