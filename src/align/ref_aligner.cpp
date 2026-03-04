@@ -220,6 +220,7 @@ namespace align {
     std::size_t RefAligner::mergeConsensusAndSamToFasta(
         const std::vector<FilePath>& sam_paths,
         const FilePath& fasta_path,
+        std::unordered_map<std::string, cigar::Cigar_t> ref_aligned_map,
         bool keep,
         std::size_t line_width
         ) const
@@ -252,8 +253,6 @@ namespace align {
                 continue;    // 跳过空文件，继续处理下一个
             }
 
-            spdlog::debug("mergeConsensusAndSamToFasta: processing SAM file {} ({}/{}): {} ({} bytes)",
-                         file_idx + 1, file_idx + 1, sam_paths.size(), sam_path.string(), file_size);
 
             // 打开当前 SAM 文件
             // 说明：
@@ -293,6 +292,19 @@ namespace align {
 #endif
                     cigar::Cigar_t cigar_ops = cigar::stringToCigar(sam_rec.cigar); // 解析 CIGAR（后续按其删除 query 插入）
                     cigar::delQueryToRefByCigar(fasta_rec.seq, cigar_ops);         // 将 query 删除投影到 ref 坐标（原地修改）
+
+                    if (sam_rec.rname != "consensus")
+                    {
+                        auto it = ref_aligned_map.find(sam_rec.rname);
+                        if (it == ref_aligned_map.end()) {
+                            {
+                                throw std::runtime_error(
+                                    "mergeAlignedResults: reference '" + sam_rec.rname +
+                                    "' not found in ref_aligned_map");
+                            }
+                        }
+                        cigar::padQueryToRefByCigar(fasta_rec.seq, it->second);
+                    }
 #ifdef _DEBUG
                     // Debug：投影后长度应与共识序列长度一致（若 ref_name 是共识）
                     if (fasta_rec.seq.size() != consensus_seq.seq.size()) {
@@ -310,23 +322,12 @@ namespace align {
                 ++total_count;  // 全部文件累计计数
             }
 
-            // 调试信息：记录每个文件的处理进度
-            #ifdef _DEBUG
-            spdlog::debug("mergeConsensusAndSamToFasta: processed file {} ({}/{}): {} records from {}",
-                         file_idx + 1, file_idx + 1, sam_paths.size(), file_count, sam_path.string());
-            #endif
 
             ++file_idx;
         }
 
         // 4. 确保所有数据已刷新到磁盘
         writer.flush();
-
-        // 调试信息：记录合并统计
-        #ifdef _DEBUG
-        spdlog::debug("mergeConsensusAndSamToFasta: merged {} SAM files ({} total records) to {}",
-                     sam_paths.size(), total_count, fasta_path.string());
-        #endif
 
         return total_count;
     }
@@ -368,18 +369,28 @@ namespace align {
             window_size,
             noncanonical);
 
-        // 2) 选择最相似 reference（线性扫描）
+        seq_io::SeqRecord best_ref;
         double best_j = -1.0;
         std::size_t best_r = 0;
-        for (std::size_t r = 0; r < ref_sketch.size(); ++r) {
-            const double j = mash::jaccard(qsk, ref_sketch[r]);
-            if (j > best_j) {
-                best_j = j;
-                best_r = r;
-            }
-        }
 
-        const auto& best_ref = ref_sequences[best_r];
+        // 2) 选择最相似 reference（线性扫描）
+        // TODO 候选多几个序列比对
+        if (ref_sequences.size() > 1)
+        {
+
+            for (std::size_t r = 0; r < ref_sketch.size(); ++r) {
+                const double j = mash::jaccard(qsk, ref_sketch[r]);
+                if (j > best_j) {
+                    best_j = j;
+                    best_r = r;
+                }
+            }
+            best_ref = ref_sequences[best_r];
+        }else
+        {
+            best_ref = consensus_seq;
+            best_j = mash::jaccard(qsk, consensus_sketch);
+        }
 
         // 3) 执行全局比对（使用统一的比对接口）
         // 说明：
@@ -398,15 +409,36 @@ namespace align {
         // non-keep-length single-ref: 如果没有插入，直接写入，如果有插入，保留和con的比对结果
         // non-keep-length multi-ref: 如果没有插入，直接写入，如果有插入，保留和con的比对结果
 
-
-        if (keep_length) {
-            if (!cigar::hasInsertion(initial_cigar)) {
-                writeSamRecord(q, initial_cigar, best_ref.id, out);
-            } else {
+        if (ref_sequences.size() == 1) {
+            // 如果只有一个参考序列，说明它就是共识序列（无论 keep_length 如何），直接使用初始比对结果即可
+            if (cigar::hasInsertion(initial_cigar)) {
                 writeSamRecord(q, initial_cigar, consensus_seq.id, out_insertion);
+            } else {
+                writeSamRecord(q, initial_cigar, consensus_seq.id, out);
             }
             return;
+        } else
+        {
+            if (keep_length)
+            {
+                if (cigar::hasInsertion(initial_cigar)) {
+                    writeSamRecord(q, initial_cigar, best_ref.id, out_insertion);
+                } else {
+                    writeSamRecord(q, initial_cigar, best_ref.id, out);
+                }
+                return;
+            }
         }
+
+
+        // if (keep_length) {
+        //     if (!cigar::hasInsertion(initial_cigar)) {
+        //         writeSamRecord(q, initial_cigar, best_ref.id, out);
+        //     } else {
+        //         writeSamRecord(q, initial_cigar, consensus_seq.id, out_insertion);
+        //     }
+        //     return;
+        // }
 
         // 有插入：进行二次比对判断（与共识序列比对）
         // 说明：
@@ -768,8 +800,13 @@ namespace align {
     // @param batch_size: 批处理大小，控制每批并行处理的序列数量（默认 1000）
     //                    - 更大的值可提高吞吐量，但占用更多内存
     // ==================================================================
-    void RefAligner::mergeAlignedResults(const FilePath output, const std::string& msa_cmd, std::size_t batch_size)
+    void RefAligner::mergeAlignedResults(const FilePath output, std::size_t batch_size)
     {
+        // keep-length single-ref: 如果没有插入，直接写入，如果有插入，保留和con的比对结果
+        // keep-length multi-ref: 如果没有插入，直接写入，如果有插入，保留和ref的比对结果
+        // non-keep-length single-ref: 如果没有插入，直接写入，如果有插入，保留和con的比对结果
+        // non-keep-length multi-ref: 如果没有插入，直接写入，如果有插入，保留和con的比对结果
+
         // ------------------------------------------------------------------
         // 进度条（使用 ProgressBar 类，减少代码冗余）
         // ------------------------------------------------------------------
@@ -805,6 +842,32 @@ namespace align {
 
         FilePath aligned_insertion_fasta = result_dir / ALIGNED_INSERTION_FASTA;
 
+        // 读取比对好参考序列文件，获得每个参考序列的和共识序列的比对结果，结果里应该只有M和D
+        std::unordered_map<std::string, cigar::Cigar_t> ref_aligned_map;
+        std::unordered_map<std::string, cigar::Cigar_t> insertion_aligned_map;
+        std::vector<bool> ref_gap_pos;                 // 共识/参考（第一条）每列是否为gap
+        std::vector<bool> insertion_ref_gap_pos;       // insertion MSA 中第一条序列每列是否为gap
+        FilePath consensus_aligned_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_ALIGNED;
+
+        // 调用辅助函数：解析 MSA 对齐文件，生成每个序列与"对齐矩阵列"的 CIGAR
+        // parseAlignedReferencesToCigar 逻辑：
+        // 1. 读取 MSA 文件中的所有序列（第一条为参考/共识）
+        // 2. 对每条序列，将 gap 位置转换为 CIGAR（M=匹配/不匹配，D=删除）
+        // 3. 记录第一条序列的 gap 位置到 ref_gap_pos/insertion_ref_gap_pos
+        parseAlignedReferencesToCigar(consensus_aligned_file, ref_aligned_map, ref_gap_pos);
+
+
+        // ------------------------------------------------------------------
+        // 阶段 3：初始化最终输出文件与序列长度检测机制
+        // ------------------------------------------------------------------
+        // FilePath final_output_path = FilePath(work_dir) / RESULTS_DIR / FINAL_ALIGNED_FASTA;
+        FilePath final_output_path = output;
+        spdlog::info("mergeAlignedResults: stage3 (output) - writing final MSA FASTA: output='{}'",
+                     final_output_path.string());
+        seq_io::SeqWriter final_writer(final_output_path, U_MAX);
+
+                //////------------------------------------------------------------------
+        /// 比对所有有插入的序列
         if (using_other_align_insertion)
         {
             // ------------------------------------------------------------------
@@ -827,7 +890,7 @@ namespace align {
             // ------------------------------------------------------------------
             // 定义输出 FASTA 文件路径
             FilePath insertion_fasta_path = result_dir / ALL_INSERTION_FASTA;
-            bool keep = keep_first_length || keep_all_length;  // 标志：是否在插入序列中保留 gap（根据 CIGAR）
+            bool keep = keep_length;  // 标志：是否在插入序列中保留 gap（根据 CIGAR）
 
             spdlog::info(
                 "mergeAlignedResults: stage1 (insertion) - merging consensus + insertion SAMs into FASTA: output='{}', keep_gaps_by_cigar={}, line_width=80",
@@ -836,6 +899,7 @@ namespace align {
             const std::size_t total_sequences = mergeConsensusAndSamToFasta(
                 insertion_sam_paths,
                 insertion_fasta_path,
+                ref_aligned_map,
                 keep,  // 是否根据 CIGAR 插入/删除 gap
                 80     // FASTA 行宽
             );
@@ -873,63 +937,18 @@ namespace align {
         {
             // 未实现的分支：可能是星比对（star alignment）或其他策略
         }
-
-        // ------------------------------------------------------------------
-        // 阶段 2：解析 MSA 文件，生成 CIGAR 映射表
-        // ------------------------------------------------------------------
-        // 目的：将 MSA 文件（FASTA 格式）转换为 CIGAR 结构，用于后续序列投影
-        //
-        // 核心数据结构：
-        // 1. ref_aligned_map：参考序列名 → CIGAR（描述该序列如何对齐到共识序列）
-        //    - key: 参考序列 ID（如 "ref_1", "ref_2"）
-        //    - value: CIGAR 字符串（只包含 M/D 操作，因为是 MSA 结果）
-        //    - 用途：将"比对到参考序列的 query"投影到共识序列坐标系
-        //
-        // 2. insertion_aligned_map：插入序列名 → CIGAR
-        //    - 描述每个插入序列如何对齐到插入 MSA 的共识序列（第一条）
-        //    - 用途：将插入序列投影到统一坐标系
-        //
-        // 3. ref_gap_pos：共识序列（第一条）在 MSA 中的 gap 位置标记
-        //    - 长度 = MSA 的列数
-        //    - ref_gap_pos[i] = true：第 i 列在共识序列中是 gap（'-'）
-        //    - 用途：如果 keep_first_length=true，移除这些列以保持共识序列原始长度
-        //
-        // 4. insertion_ref_gap_pos：插入 MSA 中共识序列的 gap 位置
-        //    - 作用类似 ref_gap_pos，用于插入序列的坐标系统
-        // ------------------------------------------------------------------
-        // 读取比对好参考序列文件，获得每个参考序列的和共识序列的比对结果，结果里应该只有M和D
-        std::unordered_map<std::string, cigar::Cigar_t> ref_aligned_map;
-        std::unordered_map<std::string, cigar::Cigar_t> insertion_aligned_map;
-        std::vector<bool> ref_gap_pos;                 // 共识/参考（第一条）每列是否为gap
-        std::vector<bool> insertion_ref_gap_pos;       // insertion MSA 中第一条序列每列是否为gap
-        FilePath consensus_aligned_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_ALIGNED;
-
-        // 调用辅助函数：解析 MSA 对齐文件，生成每个序列与"对齐矩阵列"的 CIGAR
-        // parseAlignedReferencesToCigar 逻辑：
-        // 1. 读取 MSA 文件中的所有序列（第一条为参考/共识）
-        // 2. 对每条序列，将 gap 位置转换为 CIGAR（M=匹配/不匹配，D=删除）
-        // 3. 记录第一条序列的 gap 位置到 ref_gap_pos/insertion_ref_gap_pos
-        parseAlignedReferencesToCigar(consensus_aligned_file, ref_aligned_map, ref_gap_pos);
+        //////------------------------------------------------------------------
 
         parseAlignedReferencesToCigar(aligned_insertion_fasta, insertion_aligned_map, insertion_ref_gap_pos);
 
-        if (!keep_first_length)
-        {
-            ref_aligned_map[consensus_seq.id] = insertion_aligned_map[consensus_seq.id];
-        }
+
+        ref_aligned_map[consensus_seq.id] = insertion_aligned_map[consensus_seq.id];
+
 
         spdlog::info(
             "mergeAlignedResults: stage2 (parse MSA) - parsed maps: ref_aligned_map_size={}, insertion_aligned_map_size={}, ref_gap_pos_len={}, insertion_ref_gap_pos_len={} ",
             ref_aligned_map.size(), insertion_aligned_map.size(), ref_gap_pos.size(), insertion_ref_gap_pos.size());
 
-        // ------------------------------------------------------------------
-        // 阶段 3：初始化最终输出文件与序列长度检测机制
-        // ------------------------------------------------------------------
-        // FilePath final_output_path = FilePath(work_dir) / RESULTS_DIR / FINAL_ALIGNED_FASTA;
-        FilePath final_output_path = output;
-        spdlog::info("mergeAlignedResults: stage3 (output) - writing final MSA FASTA: output='{}'",
-                     final_output_path.string());
-        seq_io::SeqWriter final_writer(final_output_path, U_MAX);
 
         // ------------------------------------------------------------------
         // 序列长度一致性检测机制
@@ -953,8 +972,8 @@ namespace align {
         // 阶段 4.1：处理共识序列及其参考序列（来自 consensus_aligned_file）
         // ------------------------------------------------------------------
         spdlog::info(
-            "mergeAlignedResults: stage4.1 (consensus+refs) - start: input='{}', keep_first_length={}, keep_all_length={} ",
-            consensus_aligned_file.string(), keep_first_length, keep_all_length);
+            "mergeAlignedResults: stage4.1 (consensus+refs) - start: input='{}', keep_length={} ",
+            consensus_aligned_file.string(), keep_length);
 
         // 数据来源：consensus_aligned_file
         // - 第一条：共识序列（consensus_seq）
@@ -978,60 +997,6 @@ namespace align {
         while (cons_reader.next(cons_rec))
         {
             seq_io::cleanSequence(cons_rec);
-            // ------------------------------------------------------------------
-            // 步骤 4.1.1：移除共识序列中的 gap 列（可选）
-            // ------------------------------------------------------------------
-            // 条件：keep_first_length = true
-            // 作用：去除共识序列为 gap 的所有列，保持共识序列的原始长度
-            // 原理：ref_gap_pos[i] = true 表示第 i 列在共识序列中是 gap
-            //       removeRefGapColumns 会删除所有这些列
-            if (keep_first_length)
-            {
-                removeRefGapColumns(cons_rec.seq, ref_gap_pos);
-            }
-
-            // ------------------------------------------------------------------
-            // 步骤 4.1.2：应用插入 CIGAR，投影到插入 MSA 坐标系
-            // ------------------------------------------------------------------
-            // 说明：consensus 对自己比对，CIGAR 为空（或只有 M 操作）
-            // tmp_insertion_cigar：共识序列在插入 MSA中的 CIGAR
-            // padQueryToRefByCigar：根据 CIGAR 在序列中插入 gap，使其对齐到插入 MSA 的坐标系
-            // 性能：原地修改，避免拷贝
-            cigar::padQueryToRefByCigar(cons_rec.seq, tmp_insertion_cigar );
-
-            // ------------------------------------------------------------------
-            // 步骤 4.1.3：移除插入 MSA 中共识序列的 gap 列（可选）
-            // ------------------------------------------------------------------
-            // 条件：keep_all_length = true 或 keep_first_length = true
-            // 作用：去除插入 MSA 共识序列为 gap 的列
-            // 用途：压缩最终 MSA，去除冗余的 gap 列
-            if (keep_all_length || keep_first_length)
-            {
-                removeRefGapColumns(cons_rec.seq, insertion_ref_gap_pos);
-            }
-
-            // ------------------------------------------------------------------
-            // 步骤 4.1.4：序列长度一致性检测
-            // ------------------------------------------------------------------
-            // 长度检测：第一条序列初始化 expected_length，后续序列必须与之一致
-            // 如果不一致，抛出异常（包含序列 ID、实际长度、期望长度、序列位置）
-            if (!length_initialized) {
-                expected_length = cons_rec.seq.size();
-                length_initialized = true;
-                spdlog::info(
-                    "mergeAlignedResults: stage4 - initialized expected_length={} (from first written sequence id='{}')",
-                    expected_length, cons_rec.id);
-            } else if (cons_rec.seq.size() != expected_length) {
-                throw std::runtime_error(
-                    "mergeAlignedResults: sequence length mismatch! sequence '" + cons_rec.id +
-                    "' has length " + std::to_string(cons_rec.seq.size()) +
-                    ", expected " + std::to_string(expected_length) +
-                    " (sequence #" + std::to_string(seq_count + 1) + ")");
-            }
-
-            // ------------------------------------------------------------------
-            // 步骤 4.1.5：写入最终 MSA 文件
-            // ------------------------------------------------------------------
             final_writer.writeFasta(cons_rec);
             ++seq_count;
             progress.tick();
@@ -1198,8 +1163,8 @@ namespace align {
                 // ------------------------------------------------------------------
                 #pragma omp parallel for default(none) \
                     shared(sam_batch, fasta_batch, current_batch_size, ref_aligned_map, \
-                           estimated_final_length, ref_gap_pos, keep_first_length, \
-                           tmp_insertion_cigar, insertion_ref_gap_pos, keep_all_length) \
+                           estimated_final_length, ref_gap_pos, keep_length, \
+                           tmp_insertion_cigar, insertion_ref_gap_pos) \
                     schedule(dynamic, 4) num_threads(threads)
                 for (std::size_t i = 0; i < current_batch_size; ++i)
                 {
@@ -1236,16 +1201,16 @@ namespace align {
                     cigar::padQueryToRefByCigar(fasta_rec.seq, it->second);
 
                     // 步骤 4.3.2.4：移除共识序列的 gap 列（可选）
-                    if (keep_first_length)
+                    if (keep_length)
                     {
                         removeRefGapColumns(fasta_rec.seq, ref_gap_pos);
                     }
 
                     // 步骤 4.3.2.5：第三级投影 - consensus → insertion MSA
-                    cigar::padQueryToRefByCigar(fasta_rec.seq, tmp_insertion_cigar);
+                    //cigar::padQueryToRefByCigar(fasta_rec.seq, tmp_insertion_cigar);
 
                     // 步骤 4.3.2.6：移除插入 MSA 共识序列的 gap 列（可选）
-                    if (keep_all_length || keep_first_length)
+                    if (keep_length)
                     {
                         removeRefGapColumns(fasta_rec.seq, insertion_ref_gap_pos);
                     }

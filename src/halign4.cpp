@@ -237,7 +237,7 @@ int main(int argc, char** argv) {
         // 比对：将输入查询序列对齐到参考序列
         ref_aligner.alignQueryToRef(opt.input);
         // 合并：汇总各块结果并按需要再次调用 MSA 做增量合并/修整，然后写出最终 output
-        ref_aligner.mergeAlignedResults(opt.output, opt.msa_cmd, 25600);
+        ref_aligner.mergeAlignedResults(opt.output, 25600);
 
         // 成功完成后，根据 --save-workdir 决定是否清理 workdir
         cleanupWorkdir(opt);

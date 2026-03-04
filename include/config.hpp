@@ -314,7 +314,7 @@ static void setupCli(CLI::App& app, Options& opt) {
         ->check(CLI::Range(1, 10000000));
 
 
-    app.add_flag("--keep-length", opt.keep_all_length,
+    app.add_flag("--keep-length", opt.keep_length,
         "Keep all reference sequences lengths unchanged. ");
 
     // workdir 管理：是否在完成后保留工作目录

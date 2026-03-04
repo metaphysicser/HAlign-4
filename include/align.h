@@ -569,7 +569,7 @@ namespace align {
         //   @param thread - 并行线程数：用于 OpenMP 并行处理 batch 内的序列
         //                   - 默认值 4，建议设置为 CPU 核心数
         // ------------------------------------------------------------------
-        void mergeAlignedResults(const FilePath output, const std::string& msa_cmd, std::size_t batch_size = 25600);
+        void mergeAlignedResults(const FilePath output, std::size_t batch_size = 25600);
 
         // ------------------------------------------------------------------
         // globalAlign - 全局序列比对（统一接口）
@@ -658,6 +658,7 @@ namespace align {
         std::size_t mergeConsensusAndSamToFasta(
             const std::vector<FilePath>& sam_paths,
             const FilePath& fasta_path,
+            std::unordered_map<std::string, cigar::Cigar_t> ref_aligned_map,
             bool keep = false,
             std::size_t line_width = 80
             ) const;
