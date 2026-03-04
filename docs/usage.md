@@ -127,25 +127,18 @@ Security note:
 
 - The command is executed via the system shell. Treat template inputs as trusted data.
 
-#### `--keep-first-length`
-Keep the **first reference sequence** (i.e. the first record in `-c/--center-path`) ungapped in the final MSA.
+#### `--keep-length`
+Keep reference sequences in `-c/--center-path` ungapped in the final MSA.
 
 - Source-level meaning (matches `RefAligner` implementation):
-  - When set, the pipeline removes alignment columns where the reference has a gap, so the first reference sequence will not contain inserted `-` columns.
+  - When set, the pipeline removes alignment columns that would introduce gaps into the reference sequences.
 - When `-c` contains multiple reference sequences:
-  - only the **first** reference sequence is guaranteed to have no inserted gaps.
-
-#### `--keep-all-length`
-Keep **all reference sequences** in `-c/--center-path` ungapped in the final MSA.
-
-- Source-level meaning (matches `RefAligner` implementation):
-  - When set, the pipeline removes alignment columns that would introduce gaps into any of the reference sequences.
-- When `-c` contains multiple reference sequences:
-  - **every** reference sequence is guaranteed to have no inserted gaps.
+  - **all** reference sequences are guaranteed to have no inserted gaps.
 
 > Important clarification
 >
-> These two flags are about **reference sequences from `-c`** (the “center/reference FASTA”), not about general query sequences.
+> This flag is about **reference sequences from `-c`** (the "center/reference FASTA"), not about general query sequences.
+
 
 #### `--save-workdir`
 Keep the working directory after successful completion.
@@ -182,7 +175,7 @@ If you don’t have `mafft` installed, either install it or switch the template 
 
 ---
 
-### Example 2: COVID dataset + demonstrate `-c`, `--keep-first-length`, `--keep-all-length`
+### Example 2: COVID dataset + demonstrate `-c`, `--keep-length`
 
 Dataset:
 
@@ -195,31 +188,20 @@ Background:
 - Other sequences are consensus sequences for variants produced by:
   https://github.com/corneliusroemer/pango-sequences
 
-#### 2.1 Keep only the *first* reference sequence ungapped (`--keep-first-length`)
+#### 2.1 Keep all reference sequences ungapped (`--keep-length`)
 
 ```bash
 ./build/halign4 \
   -i test/data/covid-test.fasta.gz \
-  -o covid.keep_first.out.fasta \
-  -w covid.keep_first.work \
+  -o covid.out.fasta \
+  -w covid.work \
   -c test/data/covid-ref.fasta.gz \
-  --keep-first-length
-```
-
-#### 2.2 Keep *all* reference sequences ungapped (`--keep-all-length`)
-
-```bash
-./build/halign4 \
-  -i test/data/covid-test.fasta.gz \
-  -o covid.keep_all.out.fasta \
-  -w covid.keep_all.work \
-  -c test/data/covid-ref.fasta.gz \
-  --keep-all-length
+  --keep-length
 ```
 
 ---
 
-## How to understand `--keep-first-length` vs `--keep-all-length` (toy example)
+## How to understand `--keep-length` behavior (toy example)
 
 This section uses a tiny, **made-up** example to make the idea concrete. All alignment rows below have the **same length**.
 
@@ -249,36 +231,23 @@ q1    ACGTTAC
 - Gaps in reference sequences are allowed.
 - This can change the *effective* coordinate system of references.
 
-### Case B: `--keep-first-length`
-
-- Guarantee: **the first reference sequence (`ref1`) will not contain inserted gaps**.
-- But other references (like `ref2`) may still have gaps.
-
-Conceptually, the pipeline will drop columns where `ref1` is `-`, so the alignment becomes:
-
-```text
-ref1  ACGTAC   (ref1 has no '-')
-ref2  ACGT-C   (column was removed where ref1 had '-')
-q1    ACGTAC   (query is projected accordingly)
-```
-
-### Case C: `--keep-all-length`
+### Case B: `--keep-length`
 
 - Guarantee: **all references in `-c` will not contain inserted gaps**.
-- So the pipeline will drop columns that would introduce gaps in any reference.
+- The pipeline will drop columns that would introduce gaps in any reference.
 
-Using the original MSA snippet above, dropping the column where `ref1` has `-` *and* the column where `ref2` has `-` yields:
+Using the original MSA snippet, dropping the column where `ref1` has `-` *and* the column where `ref2` has `-` yields:
 
 ```text
-ref1  ACGTC
-ref2  ACGTC
-q1    ACGTC
+ref1  ACGTAC
+ref2  ACGT-C
+q1    ACGTAC
 ```
 
 What to take away:
 
-- Both flags can reduce the number of alignment columns (because they remove “reference-gap columns”).
-- `--keep-all-length` is stricter, so it may remove more columns than `--keep-first-length` when `-c` contains multiple reference sequences.
+- Using `--keep-length` will reduce the number of alignment columns (because it removes "reference-gap columns").
+- This ensures all reference sequences maintain their original coordinate system without insertions.
 
 > This toy example is meant to build intuition; exact output depends on the real sequences and the chosen MSA method.
 

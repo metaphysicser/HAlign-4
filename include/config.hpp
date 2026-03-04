@@ -195,11 +195,8 @@ struct Options {
 	int sketch_size = 2000;     // --sketch-size：用于 sketch 的大小（默认 2000）
 
 	// keep length 相关开关：
-	// - keep_first_length：仅保持“第一条/中心序列”的长度不变（其余序列允许按对齐结果变化/填充），适用于只关心输出共识/中心序列长度的场景。
-	// - keep_all_length  ：保持“所有中心序列”的长度不变，适用于后续流程严格依赖原始长度坐标系（代价通常更高）。
-	bool keep_first_length = false; // --keep-first-length
-	bool keep_all_length = false;   // --keep-all-length
-
+	// - keep_length：保持“第一条/中心序列”的长度不变（其余序列允许按对齐结果变化/填充），适用于只关心输出共识/中心序列长度的场景。
+	bool keep_length = false; // --keep-length
 	// workdir 清理开关：
 	// - save_workdir：若为 true，则在完成比对/输出后保留工作目录；若为 false（默认），则在成功完成后删除工作目录。
 	bool save_workdir = false;      // --save-workdir
@@ -316,19 +313,12 @@ static void setupCli(CLI::App& app, Options& opt) {
         ->default_val(2000)
         ->check(CLI::Range(1, 10000000));
 
-    // keep length：拆分为两个互斥开关（更精确地表达需求）
-    // --keep-first-length：只保持“第一条/中心序列”的长度坐标系。
-    // 直观理解：输出对齐结果中，中心序列长度不变；其他序列可能被截断/补齐以对齐到中心。
-    app.add_flag("--keep-first-length", opt.keep_first_length,
-        "Keep the first/center sequence length unchanged (others may be trimmed/padded to fit). ");
-    // --keep-all-length：保持所有中心序列长度坐标系。
-    // 适用于下游严格依赖每条中心序列原始坐标的场景，但可能更保守/更耗时。
-    app.add_flag("--keep-all-length", opt.keep_all_length,
-        "Keep all center sequences lengths unchanged (more conservative). ");
+
+    app.add_flag("--keep-length", opt.keep_length,
+        "Keep all reference sequences lengths unchanged. ");
 
     // workdir 管理：是否在完成后保留工作目录
     // --save-workdir：保留工作目录（默认会删除）。
-    // 适用于调试/复现：可查看中间文件、外部 MSA 的输入输出、日志等。
     app.add_flag("--save-workdir", opt.save_workdir,
         "Keep the working directory after completion (default: remove). Useful for debugging.");
 }
@@ -354,16 +344,15 @@ static void logParsedOptions(const Options& opt) {
         {"input", toString(opt.input, valW)},
         {"output", toString(opt.output, valW)},
         {"workdir", toString(opt.workdir, valW)},
-        {"center_path", toString(opt.center_path, valW)},
+        {"center-path", toString(opt.center_path, valW)},
         {"msa_cmd", toString(opt.msa_cmd, valW)},
         {"threads", std::to_string(opt.threads)},
-        {"kmer_size", std::to_string(opt.kmer_size)},
-        {"kmer_window", std::to_string(opt.kmer_window)},
+        {"kmer-size", std::to_string(opt.kmer_size)},
+        {"kmer-window", std::to_string(opt.kmer_window)},
         {"cons_n", std::to_string(opt.cons_n)},
         {"sketch_size", std::to_string(opt.sketch_size)},
-        {"keep_first_length", boolToStr(opt.keep_first_length)},
-        {"keep_all_length", boolToStr(opt.keep_all_length)},
-        {"save_workdir", boolToStr(opt.save_workdir)}
+        {"keep-length", boolToStr(opt.keep_length)},
+        {"save-workdir", boolToStr(opt.save_workdir)}
     };
 
     std::ostringstream oss;

@@ -7,7 +7,7 @@ source:
   # git_rev: v2.0.0
 
 build:
-  number: 2
+  number: 3
 
 requirements:
   build:

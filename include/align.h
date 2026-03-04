@@ -1,214 +1,49 @@
-// ==================================================================
-// align.h - HAlign-4 序列比对模块核心头文件
-// ==================================================================
-// 功能概述：
-// 本文件定义了 HAlign-4 项目的序列比对核心接口，包括：
-// 1) CIGAR 操作的表示、转换与序列投影（cigar 命名空间）；
-// 2) 序列比对算法接口（KSW2、WFA2、锚点分段 MM2 风格接口）；
-// 3) 参考序列比对器（RefAligner 类）：并行产生 SAM，再合并为最终 MSA。
-//
-// 说明：这是头文件（声明为主）。注释需要与“接口语义/调用约定”一致，
-// 不应写成对某个 .cpp 具体实现细节的硬编码承诺（除非接口确实保证）。
-// ==================================================================
+// align.h - HAlign-4 序列比对模块核心接口
+// 包括：CIGAR 操作、比对算法（KSW2/WFA2/MM2）、参考序列比对器
 
 #ifndef HALIGN4_ALIGN_H
 #define HALIGN4_ALIGN_H
 #include "utils.h"
 #include "mash.h"
 #include "seed.h"
-#include  "ksw2.h"
+#include "ksw2.h"
 #include <unordered_map>
 #include <filesystem>
 #include <string>
 #include <vector>
 #include <functional>
-#include "config.hpp"  // 包含 Options 结构体的完整定义
+#include "config.hpp"
 #include "consensus.h"
 #include "preprocess.h"
 
-// ==================================================================
-// cigar 命名空间：CIGAR 操作的表示、解析与序列对齐
-// ==================================================================
-// 功能概述：
-// 提供 CIGAR（Compact Idiosyncratic Gapped Alignment Report）操作的完整支持
-// 包括：编码/解码、字符串转换、序列对齐（插入 gap）
-//
-// 核心设计：
-// 1. **压缩编码**：使用 uint32_t 存储单个 CIGAR 操作（长度+操作符）
-//    - 高 28 位：操作长度（0 到 2^28-1，约 2.68 亿）
-//    - 低 4 位：操作类型编码（0-8，对应 M/I/D/N/S/H/P/=/X）
-// 2. **零拷贝解析**：stringToCigar 直接从字符串解析为压缩格式
-// 3. **原地对齐**：padQueryToRefByCigar 原地修改序列，避免内存分配
-//
-// 支持的 CIGAR 操作（SAM 标准）：
-// - M (match/mismatch):    query 和 ref 都消耗，可能匹配或错配
-// - I (insertion):         query 相对 ref 的插入，只消耗 query
-// - D (deletion):          query 相对 ref 的缺失，只消耗 ref
-// - N (skipped region):    ref 上跳过的区域（如剪接位点），只消耗 ref
-// - S (soft clip):         query 中存在但未比对的部分，只消耗 query
-// - H (hard clip):         query 中已被移除的部分，不消耗任何序列
-// - P (padding):           silent deletion，不消耗序列（用于 MSA）
-// - = (exact match):       精确匹配（扩展 CIGAR）
-// - X (mismatch):          错配（扩展 CIGAR）
-// ==================================================================
+// CIGAR 操作：编码、解析、序列投影
+// - 压缩格式：uint32_t (高28位长度 + 低4位操作符)
+// - 操作码：0=M, 1=I, 2=D, 3=N, 4=S, 5=H, 6=P, 7==, 8=X
 namespace cigar
 {
-    // ------------------------------------------------------------------
-    // CIGAR 表示与转换
-    // ------------------------------------------------------------------
+    using CigarUnit = uint32_t;  // 单个 CIGAR 操作
+    using Cigar_t = std::vector<CigarUnit>;  // CIGAR 序列
 
-    // 单个 CIGAR 操作的压缩编码（uint32_t）
-    // 编码方式：
-    //   - 高 28 位：操作长度（len），范围 0 到 2^28-1（约 268,435,455）
-    //   - 低 4 位：操作类型（op），编码如下：
-    //       0=M, 1=I, 2=D, 3=N, 4=S, 5=H, 6=P, 7==, 8=X
-    //   - 示例：100M -> (100 << 4) | 0 = 0x640
-    //           5I   -> (5 << 4) | 1 = 0x51
-    // 内存占用：每个操作 4 字节（vs SAM 字符串每操作 3-10 字节）
-    using CigarUnit = uint32_t;
-
-    // 整个 CIGAR 操作序列（压缩形式）
-    // 示例："100M5I95M" -> [0x640, 0x51, 0x5F0]
-    // 性能：vector 存储，支持快速索引和迭代
-    using Cigar_t = std::vector<CigarUnit>;
-
-    // ------------------------------------------------------------------
-    // 函数：cigarToInt
-    // 功能：将 CIGAR 操作字符（如 'M'）与其长度编码成一个整数
-    // 编码方式：高 28 位表示长度，低 4 位为操作类型（0=M, 1=I, 等）
-    // ------------------------------------------------------------------
+    // 编码/解码
     CigarUnit cigarToInt(char operation, uint32_t len);
-
-    // ------------------------------------------------------------------
-    // 函数：intToCigar
-    // 功能：将一个压缩整数还原为操作字符与其长度
-    // 示例：0x50 -> ('M', 5)
-    // ------------------------------------------------------------------
     void intToCigar(CigarUnit cigar, char& operation, uint32_t& len);
 
-    // ------------------------------------------------------------------
-    // 函数：hasInsertion
-    // 功能：检测 CIGAR 序列中是否存在插入操作（'I'）
-    // 参数：cigar - CIGAR 操作序列（压缩形式）
-    // 返回：true 表示存在至少一个插入操作，false 表示不存在
-    // 性能：O(N)，N 为 CIGAR 操作数量；短路优化，找到第一个 'I' 即返回
-    // ------------------------------------------------------------------
+    // 检测与转换
     bool hasInsertion(const Cigar_t& cigar);
-
-    // ------------------------------------------------------------------
-    // 函数：cigarToString
-    // 功能：将 CIGAR 从压缩格式转换为 SAM 标准字符串格式
-    // 参数：cigar - CIGAR 操作序列（压缩形式）
-    // 返回：SAM 格式的 CIGAR 字符串，例如 "100M5I95M"
-    // 性能优化：
-    //   1. 预分配字符串空间（cigar.size() * 5），减少内存重新分配
-    //   2. 复杂度 O(N)，N 为 CIGAR 操作数量
-    //   3. 使用 std::to_string 进行整数到字符串转换（编译器优化）
-    // 示例：
-    //   输入：[cigarToInt('M', 100), cigarToInt('I', 5), cigarToInt('M', 95)]
-    //   输出："100M5I95M"
-    // ------------------------------------------------------------------
     std::string cigarToString(const Cigar_t& cigar);
-
-    // ------------------------------------------------------------------
-    // 函数：stringToCigar
-    // 功能：将 SAM 格式的 CIGAR 字符串解析为压缩格式的 Cigar_t
-    // 参数：cigar_str - SAM 格式的 CIGAR 字符串，例如 "100M5I95M"
-    // 返回：Cigar_t（压缩的整数向量），每个元素编码一个操作（长度+操作符）
-    // ------------------------------------------------------------------
     Cigar_t stringToCigar(const std::string& cigar_str);
 
-    // ------------------------------------------------------------------
-    // 函数：padQueryToRefByCigar
-    // 功能：根据 CIGAR 将 query 投影到 ref 坐标：
-    // - 对于 D（ref 消耗、query 不消耗）：在 query 中插入 gap('-')；
-    // - 对于 M/I/S/=/X：拷贝/跳过 query 中对应字符；
-    // - 对于 H：不消耗 query（硬剪切）所以不写入。
-    //
-    // 关键约定（与实现保持一致）：
-    // - 输入 query 中原有的 '-' 不会被特殊处理（既不删除也不自动归并），视为普通字符。
-    //   这保证了“多次投影/多轮 MSA”时不会意外破坏已有 gap。
-    //
-    // 参数：
-    //   - query：待处理序列（原地修改）
-    //   - cigar：SAM 语义的 CIGAR（压缩形式）
-    // ------------------------------------------------------------------
+    // 序列投影对齐
     void padQueryToRefByCigar(std::string& query, const Cigar_t& cigar);
-
-    // ------------------------------------------------------------------
-    // 函数：appendCigar - 将一个 CIGAR 追加到另一个 CIGAR，并智能合并相邻同类型操作
-    // ------------------------------------------------------------------
-    // 功能：
-    // 将 cigar_to_add 追加到 result 末尾，如果 result 的最后一个操作与
-    // cigar_to_add 的第一个操作类型相同，则合并它们（长度相加）
-    //
-    // 参数：
-    // @param result - 目标 CIGAR（会被修改）
-    // @param cigar_to_add - 要追加的 CIGAR
-    //
-    // 示例：
-    // result = [10M, 5I], cigar_to_add = [3I, 20M]
-    // 结果：result = [10M, 8I, 20M]  （5I + 3I 合并为 8I）
-    // ------------------------------------------------------------------
-    void appendCigar(Cigar_t& result, const Cigar_t& cigar_to_add);
-
-    // ------------------------------------------------------------------
-    // 函数：getRefLength - 计算 CIGAR 消耗的参考序列长度
-    // ------------------------------------------------------------------
-    // 功能：
-    // 统计 CIGAR 中所有消耗 ref 的操作（M/D/N/=/X）的总长度
-    //
-    // 参数：
-    // @param cigar - CIGAR 操作序列
-    //
-    // 返回：
-    // 参考序列被消耗的总长度
-    //
-    // 示例：
-    // cigar = "10M5I20M3D" -> 返回 33（10+20+3）
-    // ------------------------------------------------------------------
-    std::size_t getRefLength(const Cigar_t& cigar);
-
-    // ------------------------------------------------------------------
-    // 函数：getQueryLength - 计算 CIGAR 消耗的查询序列长度
-    // ------------------------------------------------------------------
-    // 功能：
-    // 统计 CIGAR 中所有消耗 query 的操作（M/I/S/=/X）的总长度
-    //
-    // 参数：
-    // @param cigar - CIGAR 操作序列
-    //
-    // 返回：
-    // 查询序列被消耗的总长度
-    //
-    // 示例：
-    // cigar = "10M5I20M3D" -> 返回 35（10+5+20）
-    // ------------------------------------------------------------------
-    std::size_t getQueryLength(const Cigar_t& cigar);
-
-    // ------------------------------------------------------------------
-    // 函数：delQueryToRefByCigar
-    // 功能：根据 CIGAR 将 query 投影到 ref 坐标（另一种投影方式）：
-    // - 对 I（query 相对 ref 的插入）：从 query 中删除这些碱基；
-    // - 其他操作保持 query 坐标推进。
-    //
-    // 备注：该函数和 padQueryToRefByCigar 都属于“坐标投影”，但处理对象不同：
-    // - padQueryToRefByCigar 主要处理 D（插 gap）；
-    // - delQueryToRefByCigar 主要处理 I（删碱基）。
-    // ------------------------------------------------------------------
     void delQueryToRefByCigar(std::string& query, const Cigar_t& cigar);
+
+    // CIGAR 操作
+    void appendCigar(Cigar_t& result, const Cigar_t& cigar_to_add);
+    std::size_t getRefLength(const Cigar_t& cigar);
+    std::size_t getQueryLength(const Cigar_t& cigar);
 }
-// ==================================================================
-// align 命名空间：序列比对算法与参考序列比对器
-// ==================================================================
-// 功能概述：
-// 1. 提供多种序列比对算法接口（KSW2、WFA2）
-// 2. RefAligner 类：高性能多序列比对（MSA）引擎
-//    - 支持多线程并行处理
-//    - 使用 MinHash + Minimizer 加速相似序列查找
-//    - 支持插入序列的二次比对和 MSA 整合
-// 3. 评分矩阵和配置结构体
-// ==================================================================
+
+// 序列比对：KSW2、WFA2、锚点分段（MM2）
 namespace align {
     // ------------------------------------------------------------------
     // 类型别名：种子（Seed）与种子命中（Seed Hit）
@@ -510,7 +345,7 @@ namespace align {
                    int kmer_size = 21, int window_size = 10,
                    int sketch_size = 2000, bool noncanonical = true,
                    int threads = 1, std::string msa_cmd = "",
-                   bool keep_first_length = false, bool keep_all_length = false);
+                   bool keep_length = false);
 
         // ------------------------------------------------------------------
         // 构造函数2：基于 Options 结构体初始化（推荐方式）
@@ -569,7 +404,7 @@ namespace align {
         //   @param thread - 并行线程数：用于 OpenMP 并行处理 batch 内的序列
         //                   - 默认值 4，建议设置为 CPU 核心数
         // ------------------------------------------------------------------
-        void mergeAlignedResults(const FilePath output, const std::string& msa_cmd, std::size_t batch_size = 25600);
+        void mergeAlignedResults(const FilePath output, std::size_t batch_size = 25600);
 
         // ------------------------------------------------------------------
         // globalAlign - 全局序列比对（统一接口）
@@ -658,9 +493,67 @@ namespace align {
         std::size_t mergeConsensusAndSamToFasta(
             const std::vector<FilePath>& sam_paths,
             const FilePath& fasta_path,
+            std::unordered_map<std::string, cigar::Cigar_t> ref_aligned_map,
             bool keep = false,
             std::size_t line_width = 80
             ) const;
+
+        // ------------------------------------------------------------------
+        // 辅助函数：convertSamToFastaRecord
+        // 功能：将单个 SAM 记录转换为 FASTA 记录，并根据 CIGAR 调整序列长度
+        // ------------------------------------------------------------------
+        void convertSamToFastaRecord(
+            const seq_io::SamRecord& sam_rec,
+            seq_io::SeqRecord& fasta_rec,
+            const std::unordered_map<std::string, cigar::Cigar_t>& ref_aligned_map,
+            std::size_t estimated_final_length) const;
+
+        // ------------------------------------------------------------------
+        // 辅助函数：processInsertionSequences
+        // 功能：读取插入 SAM，合并为 FASTA，执行可选 MSA
+        // 返回：插入序列 FASTA 文件路径
+        // ------------------------------------------------------------------
+        FilePath processInsertionSequences(
+            const FilePath& result_dir,
+            const FilePath& aligned_insertion_fasta,
+            std::unordered_map<std::string, cigar::Cigar_t>& ref_aligned_map) const;
+
+        // ------------------------------------------------------------------
+        // 辅助函数：writeConsensusAndReferences
+        // 功能：从对齐文件读取并写入共识及参考序列
+        // 返回：写入的序列数
+        // ------------------------------------------------------------------
+        std::size_t writeConsensusAndReferences(
+            seq_io::SeqWriter& final_writer,
+            const FilePath& consensus_aligned_file,
+            ProgressBar& progress) const;
+
+        // ------------------------------------------------------------------
+        // 辅助函数：writeInsertionSequences
+        // 功能：从对齐的插入文件读取并写入序列（跳过第一条共识）
+        // 返回：写入的序列数
+        // ------------------------------------------------------------------
+        std::size_t writeInsertionSequences(
+            seq_io::SeqWriter& final_writer,
+            const FilePath& aligned_insertion_fasta,
+            std::size_t& expected_length,
+            bool& length_initialized,
+            ProgressBar& progress) const;
+
+        // ------------------------------------------------------------------
+        // 辅助函数：processSamFileBatch
+        // 功能：读取 SAM 批次，并行转换为 FASTA，串行写入输出
+        // ------------------------------------------------------------------
+        void processSamFileBatch(
+            seq_io::SamReader& sam_reader,
+            const std::size_t batch_size,
+            seq_io::SeqWriter& final_writer,
+            const std::unordered_map<std::string, cigar::Cigar_t>& ref_aligned_map,
+            std::size_t estimated_final_length,
+            std::size_t& expected_length,
+            bool& length_initialized,
+            std::size_t& seq_count,
+            ProgressBar& progress) const;
 
         // ------------------------------------------------------------------
         // 辅助函数：parseAlignedReferencesToCigar
@@ -668,8 +561,8 @@ namespace align {
         //
         // 重要变更（接口约定）：
         // 1) 不再通过返回值返回 map，而是通过参数输出（避免大对象返回/移动，调用端更明确）
-        // 2) 新增 ref_gap_pos：标记“参考序列对齐后的每一列是否为 gap（'-'）”
-        //    - 这里的“参考序列”指该对齐文件中的第一条序列（通常是 consensus 或中心序列）
+        // 2) 新增 ref_gap_pos：标记"参考序列对齐后的每一列是否为 gap（'-'）"
+        //    - 这里的"参考序列"指该对齐文件中的第一条序列（通常是 consensus 或中心序列）
         //    - ref_gap_pos[i] == true  表示第 i 列参考为 gap
         //    - ref_gap_pos[i] == false 表示第 i 列参考为碱基
         //
@@ -728,19 +621,7 @@ namespace align {
         int threads = 1;            // OpenMP 线程数（<=0 时通常表示让运行时决定；具体逻辑在 .cpp）
         std::string msa_cmd;        // 外部 MSA 命令模板（用于共识生成与插入序列 MSA）
 
-        // ------------------------------------------------------------------
-        // MSA 输出选项
-        // ------------------------------------------------------------------
-        // 说明：
-        // - keep_first_length：是否保持第一条序列（共识序列）的原始长度
-        //   * true：移除共识序列为 gap 的所有列
-        //   * false：保留所有列（包括共识序列的 gap）
-        // - keep_all_length：是否保持所有序列的原始长度（优先级低于 keep_first_length）
-        //   * true：移除插入 MSA 中共识序列为 gap 的列
-        //   * false：保留所有列
-        // ------------------------------------------------------------------
-        bool keep_first_length = false; // true：裁剪“共识为 gap 的列”，保持中心序列原始长度
-        bool keep_all_length = false;   // true：进一步裁剪“插入 MSA 中中心序列为 gap 的列”
+        bool keep_length = false; // true：裁剪“共识为 gap 的列”，保持中心序列原始长度
 
         // ------------------------------------------------------------------
         // MinHash 计算选项
