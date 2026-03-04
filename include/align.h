@@ -664,13 +664,70 @@ namespace align {
             ) const;
 
         // ------------------------------------------------------------------
+        // 辅助函数：convertSamToFastaRecord
+        // 功能：将单个 SAM 记录转换为 FASTA 记录，并根据 CIGAR 调整序列长度
+        // ------------------------------------------------------------------
+        void convertSamToFastaRecord(
+            const seq_io::SamRecord& sam_rec,
+            seq_io::SeqRecord& fasta_rec,
+            const std::unordered_map<std::string, cigar::Cigar_t>& ref_aligned_map,
+            std::size_t estimated_final_length) const;
+
+        // ------------------------------------------------------------------
+        // 辅助函数：processInsertionSequences
+        // 功能：读取插入 SAM，合并为 FASTA，执行可选 MSA
+        // 返回：插入序列 FASTA 文件路径
+        // ------------------------------------------------------------------
+        FilePath processInsertionSequences(
+            const FilePath& result_dir,
+            const FilePath& aligned_insertion_fasta,
+            std::unordered_map<std::string, cigar::Cigar_t>& ref_aligned_map) const;
+
+        // ------------------------------------------------------------------
+        // 辅助函数：writeConsensusAndReferences
+        // 功能：从对齐文件读取并写入共识及参考序列
+        // 返回：写入的序列数
+        // ------------------------------------------------------------------
+        std::size_t writeConsensusAndReferences(
+            seq_io::SeqWriter& final_writer,
+            const FilePath& consensus_aligned_file,
+            ProgressBar& progress) const;
+
+        // ------------------------------------------------------------------
+        // 辅助函数：writeInsertionSequences
+        // 功能：从对齐的插入文件读取并写入序列（跳过第一条共识）
+        // 返回：写入的序列数
+        // ------------------------------------------------------------------
+        std::size_t writeInsertionSequences(
+            seq_io::SeqWriter& final_writer,
+            const FilePath& aligned_insertion_fasta,
+            std::size_t& expected_length,
+            bool& length_initialized,
+            ProgressBar& progress) const;
+
+        // ------------------------------------------------------------------
+        // 辅助函数：processSamFileBatch
+        // 功能：读取 SAM 批次，并行转换为 FASTA，串行写入输出
+        // ------------------------------------------------------------------
+        void processSamFileBatch(
+            seq_io::SamReader& sam_reader,
+            const std::size_t batch_size,
+            seq_io::SeqWriter& final_writer,
+            const std::unordered_map<std::string, cigar::Cigar_t>& ref_aligned_map,
+            std::size_t estimated_final_length,
+            std::size_t& expected_length,
+            bool& length_initialized,
+            std::size_t& seq_count,
+            ProgressBar& progress) const;
+
+        // ------------------------------------------------------------------
         // 辅助函数：parseAlignedReferencesToCigar
         // 功能：读取 MSA 对齐后的参考序列文件，生成每个序列的 CIGAR（只包含 M 和 D）
         //
         // 重要变更（接口约定）：
         // 1) 不再通过返回值返回 map，而是通过参数输出（避免大对象返回/移动，调用端更明确）
-        // 2) 新增 ref_gap_pos：标记“参考序列对齐后的每一列是否为 gap（'-'）”
-        //    - 这里的“参考序列”指该对齐文件中的第一条序列（通常是 consensus 或中心序列）
+        // 2) 新增 ref_gap_pos：标记"参考序列对齐后的每一列是否为 gap（'-'）"
+        //    - 这里的"参考序列"指该对齐文件中的第一条序列（通常是 consensus 或中心序列）
         //    - ref_gap_pos[i] == true  表示第 i 列参考为 gap
         //    - ref_gap_pos[i] == false 表示第 i 列参考为碱基
         //
