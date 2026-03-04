@@ -1199,21 +1199,21 @@ namespace align {
                         }
                     }
                     cigar::padQueryToRefByCigar(fasta_rec.seq, it->second);
-
-                    // 步骤 4.3.2.4：移除共识序列的 gap 列（可选）
-                    if (keep_length)
-                    {
-                        removeRefGapColumns(fasta_rec.seq, ref_gap_pos);
-                    }
+                    //
+                    // // 步骤 4.3.2.4：移除共识序列的 gap 列（可选）
+                    // if (keep_length)
+                    // {
+                    //     removeRefGapColumns(fasta_rec.seq, ref_gap_pos);
+                    // }
 
                     // 步骤 4.3.2.5：第三级投影 - consensus → insertion MSA
                     //cigar::padQueryToRefByCigar(fasta_rec.seq, tmp_insertion_cigar);
 
                     // 步骤 4.3.2.6：移除插入 MSA 共识序列的 gap 列（可选）
-                    if (keep_length)
-                    {
-                        removeRefGapColumns(fasta_rec.seq, insertion_ref_gap_pos);
-                    }
+                    // if (keep_length)
+                    // {
+                    //     removeRefGapColumns(fasta_rec.seq, insertion_ref_gap_pos);
+                    // }
                 }
                 // OpenMP 隐式 barrier：所有线程完成后才继续
 
