@@ -345,7 +345,8 @@ namespace align {
                    int kmer_size = 21, int window_size = 10,
                    int sketch_size = 2000, bool noncanonical = true,
                    int threads = 1, std::string msa_cmd = "",
-                   bool keep_length = false);
+                   bool keep_length = false,
+                   bool enable_wfa = false);
 
         // ------------------------------------------------------------------
         // 构造函数2：基于 Options 结构体初始化（推荐方式）
@@ -622,6 +623,7 @@ namespace align {
         std::string msa_cmd;        // 外部 MSA 命令模板（用于共识生成与插入序列 MSA）
 
         bool keep_length = false; // true：裁剪“共识为 gap 的列”，保持中心序列原始长度
+        bool enable_wfa = false;  // true：允许使用 WFA 路径；默认 false 保持现有行为
 
         // ------------------------------------------------------------------
         // MinHash 计算选项

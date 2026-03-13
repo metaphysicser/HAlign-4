@@ -193,6 +193,7 @@ struct Options {
 	int kmer_window = 10;       // --kmer-window：minimizer 窗口大小 w（以 k-mer 为单位）
 	int cons_n = 1000;          // --cons-n：挑选用于共识计算的序列数量（Top-K by length）
 	int sketch_size = 2000;     // --sketch-size：用于 sketch 的大小（默认 2000）
+	bool wfa = false;           // --wfa：启用 WFA 开关（默认关闭，保证现有行为不变）
 
 	// keep length 相关开关：
 	// - keep_length：保持“第一条/中心序列”的长度不变（其余序列允许按对齐结果变化/填充），适用于只关心输出共识/中心序列长度的场景。
@@ -313,6 +314,10 @@ static void setupCli(CLI::App& app, Options& opt) {
         ->default_val(2000)
         ->check(CLI::Range(1, 10000000));
 
+    // 开关参数：默认关闭，传入 --wfa 时设为 true
+    app.add_flag("--wfa", opt.wfa,
+        "Enable WFA alignment path (default: disabled).");
+
 
     app.add_flag("--keep-length", opt.keep_length,
         "Keep all reference sequences lengths unchanged. ");
@@ -351,6 +356,7 @@ static void logParsedOptions(const Options& opt) {
         {"kmer-window", std::to_string(opt.kmer_window)},
         {"cons_n", std::to_string(opt.cons_n)},
         {"sketch_size", std::to_string(opt.sketch_size)},
+        {"wfa", boolToStr(opt.wfa)},
         {"keep-length", boolToStr(opt.keep_length)},
         {"save-workdir", boolToStr(opt.save_workdir)}
     };
