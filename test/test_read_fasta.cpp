@@ -69,7 +69,7 @@ TEST_SUITE("read_fasta")
         {
             std::ofstream ofs(in, std::ios::binary);
             REQUIRE(ofs.good());
-            ofs << ">a\nACGT\n>b\nAAAA\n>c\nTTTT\n";
+            ofs << ">a\nACGTNn\n>b\nAAAA\n>c\nTTNN\n";
         }
 
         seq_io::KseqReader r(in);
@@ -80,6 +80,14 @@ TEST_SUITE("read_fasta")
             ++count;
             CHECK(!rec.id.empty());
             CHECK(!rec.seq.empty());
+
+            if (rec.id == "a") {
+                CHECK(rec.n_num == 2);
+            } else if (rec.id == "b") {
+                CHECK(rec.n_num == 0);
+            } else if (rec.id == "c") {
+                CHECK(rec.n_num == 2);
+            }
         }
         CHECK(count == 3);
     }

@@ -113,6 +113,7 @@ namespace seq_io
         std::string desc;   // header 其余部分
         std::string seq;    // 序列
         std::string qual;   // FASTQ 质量字符串（可选），实现中需要访问该字段
+        int n_num = 0;      // 序列中 N/n 的数量
     };
     using SeqRecords     = std::vector<seq_io::SeqRecord>;
 
@@ -191,8 +192,12 @@ namespace seq_io
     }
     inline void cleanSequence(SeqRecord& seq)
     {
+        seq.n_num = 0;
         for (char& ch : seq.seq) {
             ch = static_cast<char>(clean_table[static_cast<unsigned char>(ch)]);
+            if (ch == 'N') {
+                ++seq.n_num;
+            }
         }
     }
 
@@ -420,17 +425,6 @@ namespace seq_io
     // - 由于 SamRecord 已经拥有字符串的所有权，这里会发生字符串拷贝
     // - 复杂度 O(|qname| + |seq| + |qual|)，对大文件通常 IO 才是瓶颈
     // ------------------------------------------------------------------
-    // 输出：
-    // - 返回一个 SeqRecord：
-    //   - id   = sam_rec.qname
-    //   - desc = ""（SAM 没有 FASTA header 的 desc 概念）
-    //   - seq  = sam_rec.seq
-    //   - qual = (keep_qual ? sam_rec.qual : "")
-    //
-    // 性能与正确性：
-    // - 由于 SamRecord 已经拥有字符串的所有权，这里会发生字符串拷贝
-    // - 复杂度 O(|qname| + |seq| + |qual|)，对大文件通常 IO 才是瓶颈
-    // ------------------------------------------------------------------
     inline SeqRecord samRecordToSeqRecord(const SamRecord& sam_rec, bool keep_qual = false)
     {
         SeqRecord rec;
@@ -444,6 +438,9 @@ namespace seq_io
         } else {
             rec.qual.clear();
         }
+
+        // 统计当前序列中 N/n 的数量，保证不同构造路径字段语义一致。
+        rec.n_num = 0;
 
         return rec;
     }
