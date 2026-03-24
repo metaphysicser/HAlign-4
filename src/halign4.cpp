@@ -136,7 +136,7 @@ int main(int argc, char** argv) {
         // 比对阶段
         const FilePath ref_path = opt.center_path.empty() ? consensus_file : FilePath(opt.center_path);
         align::RefAligner ref_aligner(opt, ref_path);
-        ref_aligner.alignQueryToRef(opt.input);
+        ref_aligner.alignSeq2Seq(opt.input);
         ref_aligner.mergeAlignedResults(opt.output, 25600);
 
         cleanupWorkdir(opt);

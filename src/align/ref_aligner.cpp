@@ -285,12 +285,85 @@ namespace align {
         }
     }
 
+    void RefAligner::alignOneQueryToProfile(const seq_io::SeqRecord& q,
+                       seq_io::SeqWriter& out,
+                       seq_io::SeqWriter& out_insertion) const
+    {
+        // 计算 query 的 sketch 和 minimizer
+        const mash::Sketch qsk = mash::sketchFromSequence(
+            q.seq,
+            static_cast<std::size_t>(kmer_size),
+            static_cast<std::size_t>(sketch_size),
+            noncanonical,
+            random_seed);
+
+        const SeedHits query_minimizer = minimizer::extractMinimizer(
+            q.seq, kmer_size, window_size, noncanonical);
+
+        // 选择最相似的参考序列
+        seq_io::SeqRecord best_ref;
+        double best_jaccard = -1.0;
+        std::size_t best_ref_idx = 0;
+
+        if (ref_sequences.size() > 1) {
+            for (std::size_t r = 0; r < ref_sketch.size(); ++r) {
+                const double j = mash::jaccard(qsk, ref_sketch[r]);
+                if (j > best_jaccard) {
+                    best_jaccard = j;
+                    best_ref_idx = r;
+                }
+            }
+            best_ref = ref_sequences[best_ref_idx];
+        } else {
+            best_ref = consensus_seq;
+            best_jaccard = mash::jaccard(qsk, consensus_sketch);
+        }
+
+        // 执行全局比对
+        cigar::Cigar_t initial_cigar = globalAlign(
+            best_ref.seq, q.seq, best_jaccard,
+            &ref_minimizers[best_ref_idx],
+            &query_minimizer);
+
+        // 单参考序列：直接使用初始比对结果
+        if (ref_sequences.size() == 1) {
+            if (cigar::hasInsertion(initial_cigar)) {
+                writeSamRecord(q, initial_cigar, consensus_seq.id, out_insertion);
+            } else {
+                writeSamRecord(q, initial_cigar, consensus_seq.id, out);
+            }
+            return;
+        }
+
+        // 多参考序列 + keep_length：保留与最佳参考的比对结果
+        if (keep_length) {
+            if (cigar::hasInsertion(initial_cigar)) {
+                writeSamRecord(q, initial_cigar, best_ref.id, out_insertion);
+            } else {
+                writeSamRecord(q, initial_cigar, best_ref.id, out);
+            }
+            return;
+        }
+
+        // 多参考序列 + 非 keep_length：有插入时与共识序列二次比对
+        const double consensus_similarity = mash::jaccard(qsk, consensus_sketch);
+        cigar::Cigar_t recheck_cigar = globalAlign(
+            consensus_seq.seq, q.seq, consensus_similarity,
+            &consensus_minimizer, &query_minimizer);
+
+        if (cigar::hasInsertion(recheck_cigar)) {
+            writeSamRecord(q, recheck_cigar, consensus_seq.id, out_insertion);
+        } else {
+            writeSamRecord(q, recheck_cigar, consensus_seq.id, out);
+        }
+    }
+
     // 批量比对 query 序列 - 并行处理，每线程独立输出
-    void RefAligner::alignQueryToRef(const FilePath& qry_fasta_path, std::size_t batch_size)
+    void RefAligner::alignSeq2Seq(const FilePath& qry_fasta_path, std::size_t batch_size)
     {
         // 参数检查和初始化
         if (ref_sequences.empty() || ref_sketch.empty()) {
-            throw std::runtime_error("RefAligner::alignQueryToRef: 参考序列为空");
+            throw std::runtime_error("RefAligner::alignQueryToRef: reference sequence is empty");
         }
 
         constexpr std::size_t default_batch_size = 2560;
@@ -369,6 +442,117 @@ namespace align {
                 auto& out_insertion = *outs_with_insertion[static_cast<std::size_t>(tid)];
 
                 #pragma omp for schedule(dynamic, 1)
+                for (std::int64_t i = 0; i < static_cast<std::int64_t>(chunk.size()); ++i) {
+                    alignOneQueryToRef(chunk[static_cast<std::size_t>(i)], out, out_insertion);
+                }
+            }
+
+            const std::size_t chunk_size = chunk.size();
+
+            // 刷新所有 writer
+            for (auto& w : outs) {
+                w->flush();
+            }
+            for (auto& w : outs_with_insertion) {
+                w->flush();
+            }
+
+            std::vector<seq_io::SeqRecord>().swap(chunk);
+            progress.tick(chunk_size);
+        }
+
+        // 完成并确保所有数据写入磁盘
+        progress.done();
+        spdlog::info("Alignment completed");
+
+        for (auto& w : outs) {
+            if (w) w->flush();
+        }
+        for (auto& w : outs_with_insertion) {
+            if (w) w->flush();
+        }
+    }
+
+    void RefAligner::alignSeq2Profile(const FilePath& qry_fasta_path, std::size_t batch_size)
+    {
+        // 参数检查和初始化
+        if (ref_sequences.empty() || ref_sketch.empty()) {
+            throw std::runtime_error("RefAligner::alignQueryToRef: reference sequence is empty");
+        }
+
+        constexpr std::size_t default_batch_size = 2560;
+        if (batch_size == 0) {
+            batch_size = default_batch_size;
+        }
+
+        // 设置线程数
+        if (threads > 0) {
+            omp_set_num_threads(threads);
+        }
+        const int nthreads = std::max(1, omp_get_max_threads());
+
+        const FilePath result_dir = work_dir / RESULTS_DIR;
+        file_io::ensureDirectoryExists(result_dir, "result directory");
+
+        spdlog::info("Starting alignment: {} threads, batch size {}", nthreads, batch_size);
+
+        // 为每个线程创建独立的输出文件
+        outs_path.clear();
+        outs_path.resize(static_cast<std::size_t>(nthreads));
+        outs_with_insertion_path.clear();
+        outs_with_insertion_path.resize(static_cast<std::size_t>(nthreads));
+
+        std::vector<std::unique_ptr<seq_io::SeqWriter>> outs;
+        std::vector<std::unique_ptr<seq_io::SeqWriter>> outs_with_insertion;
+        outs.resize(static_cast<std::size_t>(nthreads));
+        outs_with_insertion.resize(static_cast<std::size_t>(nthreads));
+
+        for (int tid = 0; tid < nthreads; ++tid) {
+            const FilePath out_path = result_dir /
+                (THREAD_SAM_PREFIX + std::to_string(tid) + THREAD_SAM_SUFFIX);
+            const FilePath out_path_insertion = result_dir /
+                (THREAD_SAM_PREFIX + std::to_string(tid) + THREAD_INSERTION_SAM_SUFFIX);
+
+            outs_path[static_cast<std::size_t>(tid)] = out_path;
+            outs_with_insertion_path[static_cast<std::size_t>(tid)] = out_path_insertion;
+
+            auto tmp = seq_io::SeqWriter::Sam(out_path);
+            auto tmp_insertion = seq_io::SeqWriter::Sam(out_path_insertion);
+
+            outs[static_cast<std::size_t>(tid)] =
+                std::make_unique<seq_io::SeqWriter>(std::move(tmp));
+            outs[static_cast<std::size_t>(tid)]->writeSamHeader("@HD\tVN:1.6\tSO:unknown");
+
+            outs_with_insertion[static_cast<std::size_t>(tid)] =
+                std::make_unique<seq_io::SeqWriter>(std::move(tmp_insertion));
+            outs_with_insertion[static_cast<std::size_t>(tid)]->writeSamHeader("@HD\tVN:1.6\tSO:unknown");
+        }
+
+        // 流式读取 + 批处理并行
+        seq_io::KseqReader reader(qry_fasta_path);
+        std::vector<seq_io::SeqRecord> chunk;
+        chunk.reserve(batch_size);
+
+        ProgressBar progress("align");
+
+        while (true) {
+            chunk.clear();
+            chunk.shrink_to_fit();
+            chunk.reserve(batch_size);
+
+            // 读取一个批次
+            seq_io::SeqRecord rec;
+            for (std::size_t i = 0; i < batch_size; ++i) {
+                if (!reader.next(rec)) break;
+                chunk.push_back(std::move(rec));
+            }
+            if (chunk.empty()) break;
+
+            {
+                const int tid = omp_get_thread_num();
+                auto& out = *outs[static_cast<std::size_t>(tid)];
+                auto& out_insertion = *outs_with_insertion[static_cast<std::size_t>(tid)];
+
                 for (std::int64_t i = 0; i < static_cast<std::int64_t>(chunk.size()); ++i) {
                     alignOneQueryToRef(chunk[static_cast<std::size_t>(i)], out, out_insertion);
                 }

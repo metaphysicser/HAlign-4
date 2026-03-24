@@ -15,12 +15,12 @@ namespace align
     // KSW2 全局比对（end-to-end）- 编码序列并调用 KSW2
     cigar::Cigar_t globalAlignKSW2(const std::string& ref, const std::string& query)
     {
-        align::KSW2AlignConfig cfg;
+        align::AlignConfig cfg;
         return globalAlignKSW2(ref, query, cfg);
     }
 
     cigar::Cigar_t globalAlignKSW2(const std::string& ref, const std::string& query,
-                                   align::KSW2AlignConfig cfg)
+                                   align::AlignConfig cfg)
     {
         // 边界：任意一条序列为空时，直接返回纯 I / 纯 D 的 CIGAR
         if (ref.size() == 0 || query.size() == 0) {
@@ -76,7 +76,7 @@ namespace align
         for (size_t i = 0; i < query.size(); ++i) qry_enc[i] = align::ScoreChar2Idx[(uint8_t)query[i]];
 
         // 配置参数：EXTZ_ONLY + RIGHT + APPROX_DROP for extension
-        align::KSW2AlignConfig cfg;
+        align::AlignConfig cfg;
         cfg.mat = align::dna5_simd_mat;
         cfg.zdrop = zdrop;
         cfg.flag = KSW_EZ_EXTZ_ONLY | KSW_EZ_RIGHT | KSW_EZ_APPROX_DROP;
@@ -184,14 +184,60 @@ namespace align
     //     return cigar;
     // }
 
+    cigar::Cigar_t globalAlignPSW(const ProfileMatrix& ref, const std::string& query, align::AlignConfig cfg)
+    {
+        // 边界：任意一条序列为空时，直接返回纯 I / 纯 D 的 CIGAR
+        if (ref.len == 0 || query.size() == 0) {
+            cigar::Cigar_t cigar;
+            if (ref.len == 0 && query.size() > 0) {
+                cigar.push_back(cigar::cigarToInt('I', static_cast<uint32_t>(query.size())));
+            } else if (query.size() == 0 && ref.len > 0) {
+                cigar.push_back(cigar::cigarToInt('D', static_cast<uint32_t>(ref.len)));
+            }
+            return cigar;
+        }
+
+        // 编码序列：DNA5 (A/C/G/T/N -> 0..4)
+
+        std::vector<uint8_t> qry_enc(query.size());
+
+
+        for (size_t i = 0; i < query.size(); ++i)
+            qry_enc[i] = align::ScoreChar2Idx[static_cast<uint8_t>(query[i])];
+
+        cfg.band_width = align::auto_band(ref.len, query.size());
+
+        int m_cigar, n_cigar;
+        uint32_t* cigar1 = nullptr;
+        psw_prof_t ref_prof;
+        ref_prof.len = ref.len;
+        ref_prof.dim = ref.dim;
+        ref_prof.depth = ref.depth;
+        ref_prof.prof = ref.prof.data();
+
+
+        float score = psw_gg3_sse_ps(0, query.size(), qry_enc.data(), ref.len, &ref_prof, (int8_t)ref.dim, cfg.mat,
+                                    cfg.gap_open, cfg.gap_extend, cfg.band_width,
+                                    &m_cigar, &n_cigar, &cigar1);
+
+        // 拷贝并释放 CIGAR
+        cigar::Cigar_t cigar;
+        cigar.reserve(n_cigar);
+        for (int i = 0; i < n_cigar; ++i)
+            cigar.push_back(cigar1[i]);
+
+        free(cigar1);
+        return cigar;
+    }
+
     // 基于锚点的分段全局比对（minimap2 风格）
     // - 用锚点拆分为多个片段，逐段全局比对，最后合并
     cigar::Cigar_t globalAlignMM2(const std::string& ref,
                                   const std::string& query,
                                   const anchor::Anchors& anchors)
     {
-        align::KSW2AlignConfig cfg;
-        align::KSW2AlignConfig first_cfg;
+        align::AlignConfig cfg;
+        align::AlignConfig first_cfg;
         first_cfg.flag = KSW_EZ_GENERIC_SC;
 
         const std::size_t ref_len = ref.size();
@@ -219,7 +265,7 @@ namespace align
         std::size_t qry_pos = 0;
 
         auto append_segment = [&](std::size_t ref_start, std::size_t ref_end,
-                                  std::size_t qry_start, std::size_t qry_end, align::KSW2AlignConfig seg_cfg) {
+                                  std::size_t qry_start, std::size_t qry_end, align::AlignConfig seg_cfg) {
             // 边界裁剪
             ref_start = std::min(ref_start, ref_len);
             ref_end = std::min(ref_end, ref_len);
