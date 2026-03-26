@@ -51,12 +51,36 @@ namespace align {
     using SeedHits = std::vector<SeedHit>;
     static constexpr seed::SeedKind kSeedKind = seed::SeedKind::minimizer;
 
-    typedef struct {
+    typedef struct ProfileMatrix{
         int len;
         int dim;
         int depth;              /* profile 总序列数 */
         std::vector<uint32_t> prof;   /* 每列 dim 个计数；前 m 个通常是 residue/base 计数 */
-    } ProfileMatrix;
+
+        ProfileMatrix() : len(0), dim(5), depth(0), prof() {}
+
+        // 从单条序列构造 profile：每列仅一个碱基计数为 1，其余为 0。
+        // 约定 A/C/G/T/N -> 0/1/2/3/4，非法字符按 N 处理，保持与项目 DNA5 语义一致。
+        explicit ProfileMatrix(const std::string& seq) : len(static_cast<int>(seq.size())), dim(5), depth(seq.empty() ? 0 : 1), prof(static_cast<std::size_t>(len) * 5, 0U) {
+            for (int i = 0; i < len; ++i) {
+                const char ch = seq[static_cast<std::size_t>(i)];
+                int idx = 4;
+                switch (ch) {
+                case 'A': case 'a': idx = 0; break;
+                case 'C': case 'c': idx = 1; break;
+                case 'G': case 'g': idx = 2; break;
+                case 'T': case 't': idx = 3; break;
+                case 'U': case 'u': idx = 3; break; // RNA/U 按 T 处理
+                case 'N': case 'n': idx = 4; break;
+                default: idx = 4; break;
+                }
+                prof[static_cast<std::size_t>(i) * 5 + static_cast<std::size_t>(idx)] = 1U;
+            }
+        }
+    };
+
+
+
 
     // DNA 字符映射到 0..4（A/C/G/T/N，大小写不敏感；其他字符按 N）
     static constexpr uint8_t ScoreChar2Idx[256] = {
@@ -138,9 +162,15 @@ namespace align {
     using AlignFunc = std::function<cigar::Cigar_t(const std::string&, const std::string&)>;
 
     // 基于锚点的分段全局比对；锚点无效时退化为普通全局比对
-    cigar::Cigar_t globalAlignMM2(const std::string& ref,
+    cigar::Cigar_t globalAlignSeq2Seq(const std::string& ref,
+                                      const std::string& query,
+                                      const anchor::Anchors& anchors);
+
+    cigar::Cigar_t globalAlignSeq2Profile(const ProfileMatrix& ref,
                                   const std::string& query,
-                                  const anchor::Anchors& anchors);
+                                  const anchor::Anchors& anchors,
+                                  int thread = 1);
+
 
     // 参考序列比对器：批量比对 query，并合并生成最终 MSA
     class RefAligner
@@ -167,11 +197,18 @@ namespace align {
         void mergeAlignedResults(const FilePath output, std::size_t batch_size = 25600);
 
         // 全局比对统一入口（保留 similarity/minimizer 参数以兼容后续策略）
-        cigar::Cigar_t globalAlign(const std::string& ref,
+        cigar::Cigar_t Seq2SeqWithAnchor(const std::string& ref,
                                           const std::string& query,
                                           double similarity,
                                           const SeedHits* ref_minimizer = nullptr,
                                           const SeedHits* query_minimizer = nullptr) const;
+
+        cigar::Cigar_t Seq2ProfileWithAnchor(const ProfileMatrix& ref,
+                                    const std::string& ref_string,
+                                   const std::string& query,
+                                   double similarity,
+                                   const SeedHits* ref_minimizer = nullptr,
+                                   const SeedHits* query_minimizer = nullptr) const;
 
         // 删除“参考为 gap”的列（原地修改）
         static void removeRefGapColumns(

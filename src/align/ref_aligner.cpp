@@ -44,6 +44,7 @@ namespace align {
             ref_sequences.push_back(std::move(rec));
             ref_sketch.push_back(std::move(sketch));
             ref_minimizers.push_back(std::move(minimizer));
+            ref_profile.emplace_back(ProfileMatrix(rec.seq));
         }
 
         // 设置共识序列生成的文件路径
@@ -61,6 +62,7 @@ namespace align {
 
         consensus_seq.id = "consensus";
         consensus_seq.seq = std::move(consensus_string);
+        consensus_profile = ProfileMatrix(consensus_seq.seq);
 
         // 预计算共识序列的 sketch 和 minimizer，避免重复计算
         consensus_sketch = mash::sketchFromSequence(
@@ -91,7 +93,7 @@ namespace align {
     }
 
     // 全局比对：生成 minimizer 锚点，执行比对
-    cigar::Cigar_t RefAligner::globalAlign(const std::string& ref,
+    cigar::Cigar_t RefAligner::Seq2SeqWithAnchor(const std::string& ref,
                                            const std::string& query,
                                            double similarity,
                                            const SeedHits* ref_minimizer,
@@ -114,7 +116,7 @@ namespace align {
         }
 
         const anchor::Anchors anchors = minimizer::collect_anchors(*ref_mz_ptr, *qry_mz_ptr);
-        cigar::Cigar_t result = globalAlignMM2(ref, query, anchors);
+        cigar::Cigar_t result = globalAlignSeq2Seq(ref, query, anchors);
 
 #ifdef _DEBUG
         const std::size_t cigar_ref_len = cigar::getRefLength(result);
@@ -125,6 +127,44 @@ namespace align {
         }
 #endif
         return result;
+    }
+
+    cigar::Cigar_t RefAligner::Seq2ProfileWithAnchor(const ProfileMatrix& ref,
+                                        const std::string& ref_string,
+                                       const std::string& query,
+                                       double similarity,
+                                       const SeedHits* ref_minimizer,
+                                       const SeedHits* query_minimizer) const
+    {
+        const SeedHits* ref_mz_ptr = ref_minimizer;
+        const SeedHits* qry_mz_ptr = query_minimizer;
+
+        SeedHits ref_mz_tmp;
+        SeedHits qry_mz_tmp;
+
+        // 若 minimizer 为空，现场计算
+        if (ref_mz_ptr == nullptr || ref_mz_ptr->empty()) {
+            ref_mz_tmp = minimizer::extractMinimizer(ref_string, kmer_size, window_size, noncanonical);
+            ref_mz_ptr = &ref_mz_tmp;
+        }
+        if (qry_mz_ptr == nullptr || qry_mz_ptr->empty()) {
+            qry_mz_tmp = minimizer::extractMinimizer(query, kmer_size, window_size, noncanonical);
+            qry_mz_ptr = &qry_mz_tmp;
+        }
+
+        const anchor::Anchors anchors = minimizer::collect_anchors(*ref_mz_ptr, *qry_mz_ptr);
+        cigar::Cigar_t result = globalAlignSeq2Profile(ref, query, anchors);
+
+#ifdef _DEBUG
+        const std::size_t cigar_ref_len = cigar::getRefLength(result);
+        const std::size_t cigar_qry_len = cigar::getQueryLength(result);
+        if (cigar_ref_len != ref_string.size() || cigar_qry_len != query.size()) {
+            spdlog::debug("globalAlign: CIGAR length mismatch! ref:{} vs {}, query:{} vs {}",
+                         ref_string.size(), cigar_ref_len, query.size(), cigar_qry_len);
+        }
+#endif
+        return result;
+
     }
 
     // 写入 SAM 记录
@@ -247,7 +287,7 @@ namespace align {
         }
 
         // 执行全局比对
-        cigar::Cigar_t initial_cigar = globalAlign(
+        cigar::Cigar_t initial_cigar = Seq2SeqWithAnchor(
             best_ref.seq, q.seq, best_jaccard,
             &ref_minimizers[best_ref_idx],
             &query_minimizer);
@@ -274,7 +314,7 @@ namespace align {
 
         // 多参考序列 + 非 keep_length：有插入时与共识序列二次比对
         const double consensus_similarity = mash::jaccard(qsk, consensus_sketch);
-        cigar::Cigar_t recheck_cigar = globalAlign(
+        cigar::Cigar_t recheck_cigar = Seq2SeqWithAnchor(
             consensus_seq.seq, q.seq, consensus_similarity,
             &consensus_minimizer, &query_minimizer);
 
@@ -301,6 +341,7 @@ namespace align {
             q.seq, kmer_size, window_size, noncanonical);
 
         // 选择最相似的参考序列
+        align::ProfileMatrix best_ref_profile;
         seq_io::SeqRecord best_ref;
         double best_jaccard = -1.0;
         std::size_t best_ref_idx = 0;
@@ -313,15 +354,17 @@ namespace align {
                     best_ref_idx = r;
                 }
             }
+            best_ref_profile = ref_profile[best_ref_idx];
             best_ref = ref_sequences[best_ref_idx];
         } else {
+            best_ref_profile = consensus_profile;
             best_ref = consensus_seq;
             best_jaccard = mash::jaccard(qsk, consensus_sketch);
         }
 
         // 执行全局比对
-        cigar::Cigar_t initial_cigar = globalAlign(
-            best_ref.seq, q.seq, best_jaccard,
+        cigar::Cigar_t initial_cigar = Seq2ProfileWithAnchor(
+            best_ref_profile, best_ref.seq, q.seq, best_jaccard,
             &ref_minimizers[best_ref_idx],
             &query_minimizer);
 
@@ -347,8 +390,8 @@ namespace align {
 
         // 多参考序列 + 非 keep_length：有插入时与共识序列二次比对
         const double consensus_similarity = mash::jaccard(qsk, consensus_sketch);
-        cigar::Cigar_t recheck_cigar = globalAlign(
-            consensus_seq.seq, q.seq, consensus_similarity,
+        cigar::Cigar_t recheck_cigar = Seq2ProfileWithAnchor(
+            consensus_profile,consensus_seq.seq, q.seq, consensus_similarity,
             &consensus_minimizer, &query_minimizer);
 
         if (cigar::hasInsertion(recheck_cigar)) {
@@ -554,7 +597,7 @@ namespace align {
                 auto& out_insertion = *outs_with_insertion[static_cast<std::size_t>(tid)];
 
                 for (std::int64_t i = 0; i < static_cast<std::int64_t>(chunk.size()); ++i) {
-                    alignOneQueryToRef(chunk[static_cast<std::size_t>(i)], out, out_insertion);
+                    alignOneQueryToProfile(chunk[static_cast<std::size_t>(i)], out, out_insertion);
                 }
             }
 
