@@ -46,27 +46,40 @@ namespace align
             qry_enc[i] = align::ScoreChar2Idx[static_cast<uint8_t>(query[i])];
 
         cfg.band_width = align::auto_band(ref.size(), query.size());
+        //cfg.band_width = -1;
 
         // 改为调用 ksw_gg2_sse：该接口是标准全局比对（Needleman-Wunsch），
         // 直接返回完整路径 CIGAR，不再依赖 extz 的 zdrop/end_bonus/flag 行为。
         int m_cigar = 0;
         int n_cigar = 0;
         uint32_t* cigar_raw = nullptr;
-        ksw_gg2_sse(nullptr,
-                    static_cast<int>(qry_enc.size()), qry_enc.data(),
-                    static_cast<int>(ref_enc.size()), ref_enc.data(),
-                    static_cast<int8_t>(cfg.alphabet_size), cfg.mat,
-                    static_cast<int8_t>(cfg.gap_open), static_cast<int8_t>(cfg.gap_extend),
-                    cfg.band_width,
-                    &m_cigar, &n_cigar, &cigar_raw);
+        // ksw_gg2_sse(nullptr,
+        //             static_cast<int>(qry_enc.size()), qry_enc.data(),
+        //             static_cast<int>(ref_enc.size()), ref_enc.data(),
+        //             static_cast<int8_t>(cfg.alphabet_size), cfg.mat,
+        //             static_cast<int8_t>(cfg.gap_open), static_cast<int8_t>(cfg.gap_extend),
+        //             cfg.band_width,
+        //             &m_cigar, &n_cigar, &cigar_raw);
+        ksw_extz_t ez{};
+        ksw_extz2_sse(nullptr,
+        static_cast<int>(qry_enc.size()), qry_enc.data(),
+        static_cast<int>(ref_enc.size()), ref_enc.data(),
+        cfg.alphabet_size, cfg.mat,
+        cfg.gap_open, cfg.gap_extend,
+        cfg.band_width, cfg.zdrop, cfg.end_bonus,
+         cfg.flag, &ez);
 
         // 拷贝并释放 CIGAR：保持对外返回类型不变，避免调用方感知底层算法替换。
+        // cigar::Cigar_t cigar;
+        // if (n_cigar > 0 && cigar_raw != nullptr) {
+        //     cigar.reserve(static_cast<std::size_t>(n_cigar));
+        //     for (int i = 0; i < n_cigar; ++i)
+        //         cigar.push_back(cigar_raw[i]);
+        // }
         cigar::Cigar_t cigar;
-        if (n_cigar > 0 && cigar_raw != nullptr) {
-            cigar.reserve(static_cast<std::size_t>(n_cigar));
-            for (int i = 0; i < n_cigar; ++i)
-                cigar.push_back(cigar_raw[i]);
-        }
+        cigar.reserve(ez.n_cigar);
+        for (int i = 0; i < ez.n_cigar; ++i)
+            cigar.push_back(ez.cigar[i]);
 
         free(cigar_raw);
         return cigar;
@@ -214,6 +227,7 @@ namespace align
             qry_enc[i] = align::ScoreChar2Idx[static_cast<uint8_t>(query[i])];
 
         cfg.band_width = align::auto_band(ref.len, query.size());
+        //cfg.band_width = -1;
 
         int m_cigar = 0, n_cigar = 0;
         uint32_t* cigar1 = 0;
@@ -227,6 +241,7 @@ namespace align
         psw_gg3_sse_ps(0, query.size(), qry_enc.data(), ref.len, &ref_prof, (int8_t)ref.dim, cfg.mat,
                                     cfg.gap_open, cfg.gap_extend, cfg.band_width,
                                     &m_cigar, &n_cigar, &cigar1);
+
 
         // 拷贝并释放 CIGAR
         cigar::Cigar_t cigar;
@@ -392,7 +407,8 @@ namespace align
         std::size_t qry_pos = 0;
 
         auto append_segment = [&](std::size_t ref_start, std::size_t ref_end,
-                                  std::size_t qry_start, std::size_t qry_end, align::AlignConfig seg_cfg) {
+                                  std::size_t qry_start, std::size_t qry_end, align::AlignConfig seg_cfg,
+                                  bool reverse_for_align = false) {
             // 边界裁剪
             ref_start = std::min(ref_start, ref_len);
             ref_end = std::min(ref_end, ref_len);
@@ -415,13 +431,38 @@ namespace align
                                     ref.prof.begin() + static_cast<std::ptrdiff_t>(offset + count));
             }
 
-            const std::string seg_qry = query.substr(qry_start, qry_end - qry_start);
+            std::string seg_qry = query.substr(qry_start, qry_end - qry_start);
+            const std::size_t seg_qry_len = seg_qry.size();
+
+            // 仅用于尾段的质量优化：反向输入后求解，再把 CIGAR 顺序回正。
+            // 注意：ref/query 角色不变，因此只需要反转 CIGAR 单元顺序，不需要互换 I/D。
+            if (reverse_for_align) {
+                std::reverse(seg_qry.begin(), seg_qry.end());
+
+                // ProfileMatrix 是按“列块(dim)”线性存储，反向时必须按列翻转，
+                // 否则会破坏单列内部 A/C/G/T/N 计数布局。
+                if (seg_ref_len > 1) {
+                    const std::size_t dim = static_cast<std::size_t>(seg_ref.dim);
+                    std::vector<uint32_t> reversed_prof(seg_ref.prof.size(), 0U);
+                    for (std::size_t dst_col = 0; dst_col < seg_ref_len; ++dst_col) {
+                        const std::size_t src_col = (seg_ref_len - 1U) - dst_col;
+                        const std::size_t src_off = src_col * dim;
+                        const std::size_t dst_off = dst_col * dim;
+                        std::copy(seg_ref.prof.begin() + static_cast<std::ptrdiff_t>(src_off),
+                                  seg_ref.prof.begin() + static_cast<std::ptrdiff_t>(src_off + dim),
+                                  reversed_prof.begin() + static_cast<std::ptrdiff_t>(dst_off));
+                    }
+                    seg_ref.prof.swap(reversed_prof);
+                }
+            }
 
             cigar::Cigar_t seg_cigar = globalAlignPSW(seg_ref, seg_qry, seg_cfg);
+            if (reverse_for_align) {
+                std::reverse(seg_cigar.begin(), seg_cigar.end());
+            }
 
             // 用 CIGAR 反推消耗长度
 
-            const std::size_t seg_qry_len = seg_qry.size();
             const std::size_t c_ref = cigar::getRefLength(seg_cigar);
             const std::size_t c_qry = cigar::getQueryLength(seg_cigar);
 
@@ -475,7 +516,8 @@ namespace align
         }
 
         // 右端：最后一个锚点到末尾
-        append_segment(ref_pos, ref_len, qry_pos, qry_len, cfg);
+        // 尾段启用“反向比对 + CIGAR 回正”，仅影响该段求解过程，不改变最终输出方向。
+        append_segment(ref_pos, ref_len, qry_pos, qry_len, cfg, true);
 
         // 最终一致性检查
         const std::size_t total_ref = cigar::getRefLength(result);
