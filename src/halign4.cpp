@@ -138,7 +138,7 @@ int main(int argc, char** argv) {
         align::RefAligner ref_aligner(opt, ref_path);
         ref_aligner.alignSeq2Profile(opt.input);
         //ref_aligner.alignSeq2Seq(opt.input);
-        ref_aligner.mergeAlignedResults(opt.output, 25600);
+        //ref_aligner.mergeAlignedResults(opt.output, 25600);
 
         cleanupWorkdir(opt);
 

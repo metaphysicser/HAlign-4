@@ -167,6 +167,7 @@ namespace align {
                                       const anchor::Anchors& anchors);
 
     cigar::Cigar_t globalAlignSeq2Profile(const ProfileMatrix& ref,
+                                    const std::string& ref_string,
                                   const std::string& query,
                                   const anchor::Anchors& anchors,
                                   int thread = 1);

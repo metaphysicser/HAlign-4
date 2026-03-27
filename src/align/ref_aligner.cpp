@@ -41,10 +41,11 @@ namespace align {
                                                    noncanonical, random_seed);
             auto minimizer = minimizer::extractMinimizer(rec.seq, kmer_size,
                                                          window_size, noncanonical);
+            ref_profile.push_back(ProfileMatrix(rec.seq));
             ref_sequences.push_back(std::move(rec));
             ref_sketch.push_back(std::move(sketch));
             ref_minimizers.push_back(std::move(minimizer));
-            ref_profile.emplace_back(ProfileMatrix(rec.seq));
+
         }
 
         // 设置共识序列生成的文件路径
@@ -153,7 +154,7 @@ namespace align {
         }
 
         const anchor::Anchors anchors = minimizer::collect_anchors(*ref_mz_ptr, *qry_mz_ptr);
-        cigar::Cigar_t result = globalAlignSeq2Profile(ref, query, anchors);
+        cigar::Cigar_t result = globalAlignSeq2Profile(ref, ref_string, query, anchors);
 
 #ifdef _DEBUG
         const std::size_t cigar_ref_len = cigar::getRefLength(result);
@@ -577,6 +578,7 @@ namespace align {
         chunk.reserve(batch_size);
 
         ProgressBar progress("align");
+        progress.tick(0);
 
         while (true) {
             chunk.clear();
@@ -591,10 +593,13 @@ namespace align {
             }
             if (chunk.empty()) break;
 
+#pragma omp parallel default(none) shared(outs, outs_with_insertion, chunk)
             {
                 const int tid = omp_get_thread_num();
                 auto& out = *outs[static_cast<std::size_t>(tid)];
                 auto& out_insertion = *outs_with_insertion[static_cast<std::size_t>(tid)];
+
+#pragma omp for schedule(dynamic, 1)
 
                 for (std::int64_t i = 0; i < static_cast<std::int64_t>(chunk.size()); ++i) {
                     alignOneQueryToProfile(chunk[static_cast<std::size_t>(i)], out, out_insertion);
