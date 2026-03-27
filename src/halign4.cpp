@@ -136,9 +136,26 @@ int main(int argc, char** argv) {
         // 比对阶段
         const FilePath ref_path = opt.center_path.empty() ? consensus_file : FilePath(opt.center_path);
         align::RefAligner ref_aligner(opt, ref_path);
-        ref_aligner.alignSeq2Profile(opt.input);
-        //ref_aligner.alignSeq2Seq(opt.input);
-        //ref_aligner.mergeAlignedResults(opt.output, 25600);
+
+        // 批大小策略：
+        // - 用户显式传 --batch-size 时，统一覆盖 align 与 merge 的 batch；
+        // - 未传（0）时保持历史行为：seq2profile=128，seq2seq=函数默认值(25600)，merge=25600。
+        const std::size_t cli_batch_size = (opt.batch_size > 0)
+            ? static_cast<std::size_t>(opt.batch_size)
+            : 0U;
+        const std::size_t merge_batch_size = (cli_batch_size > 0) ? cli_batch_size : 25600U;
+
+        // 默认走 seq2profile；仅当用户显式开启 --seq2seq 时切换到 seq2seq。
+        if (opt.seq2seq) {
+            spdlog::info("Alignment mode: seq2seq, batch_size={}",
+                         (cli_batch_size > 0 ? cli_batch_size : 25600U));
+            ref_aligner.alignSeq2Seq(opt.input, cli_batch_size);
+        } else {
+            const std::size_t seq2profile_batch_size = (cli_batch_size > 0) ? cli_batch_size : 128U;
+            spdlog::info("Alignment mode: seq2profile, batch_size={}", seq2profile_batch_size);
+            ref_aligner.alignSeq2Profile(opt.input, seq2profile_batch_size);
+        }
+        ref_aligner.mergeAlignedResults(opt.output, merge_batch_size);
 
         cleanupWorkdir(opt);
 

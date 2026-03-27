@@ -193,7 +193,9 @@ struct Options {
 	int kmer_window = 10;       // --kmer-window：minimizer 窗口大小 w（以 k-mer 为单位）
 	int cons_n = 1000;          // --cons-n：挑选用于共识计算的序列数量（Top-K by length）
 	int sketch_size = 2000;     // --sketch-size：用于 sketch 的大小（默认 2000）
+	int batch_size = 0;         // --batch-size：对齐批大小；0 表示按模式使用内置默认值
 	bool wfa = false;           // --wfa：启用 WFA 开关（默认关闭，保证现有行为不变）
+	bool seq2seq = false;       // --seq2seq：开启后使用 seq2seq 比对路径；默认使用 seq2profile
 
 	// keep length 相关开关：
 	// - keep_length：保持“第一条/中心序列”的长度不变（其余序列允许按对齐结果变化/填充），适用于只关心输出共识/中心序列长度的场景。
@@ -314,9 +316,22 @@ static void setupCli(CLI::App& app, Options& opt) {
         ->default_val(2000)
         ->check(CLI::Range(1, 10000000));
 
+    // --batch-size：对齐阶段批大小。
+    // 说明：
+    // - 仅影响 alignSeq2Profile/alignSeq2Seq 的分批读取与并行粒度；
+    // - 设为 0 时保持当前模式默认行为（不改变历史默认逻辑）。
+    app.add_option("--batch-size", opt.batch_size,
+                   "Alignment batch size (0 keeps mode default behavior).")
+        ->default_val(0)
+        ->check(CLI::Range(0, 100000000));
+
     // 开关参数：默认关闭，传入 --wfa 时设为 true
     app.add_flag("--wfa", opt.wfa,
         "Enable WFA alignment path (default: disabled).");
+
+    // 比对模式开关：默认走 seq2profile，开启后切换为 seq2seq。
+    app.add_flag("--seq2seq", opt.seq2seq,
+        "Use seq2seq alignment pipeline instead of seq2profile (default: seq2profile).");
 
 
     app.add_flag("--keep-length", opt.keep_length,
@@ -356,7 +371,9 @@ static void logParsedOptions(const Options& opt) {
         {"kmer-window", std::to_string(opt.kmer_window)},
         {"cons_n", std::to_string(opt.cons_n)},
         {"sketch_size", std::to_string(opt.sketch_size)},
+        {"batch-size", std::to_string(opt.batch_size)},
         {"wfa", boolToStr(opt.wfa)},
+        {"seq2seq", boolToStr(opt.seq2seq)},
         {"keep-length", boolToStr(opt.keep_length)},
         {"save-workdir", boolToStr(opt.save_workdir)}
     };

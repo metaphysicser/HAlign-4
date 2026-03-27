@@ -328,8 +328,14 @@ namespace align {
 
     void RefAligner::alignOneQueryToProfile(const seq_io::SeqRecord& q,
                        seq_io::SeqWriter& out,
-                       seq_io::SeqWriter& out_insertion) const
+                       seq_io::SeqWriter& out_insertion,
+                       cigar::Cigar_t& out_cigar,
+                       int& out_ref_idx) const
     {
+        // 初始化输出占位，便于调用方在调试时识别“未写入”状态
+        out_cigar.clear();
+        out_ref_idx = -1;
+
         // 计算 query 的 sketch 和 minimizer
         const mash::Sketch qsk = mash::sketchFromSequence(
             q.seq,
@@ -371,6 +377,10 @@ namespace align {
 
         // 单参考序列：直接使用初始比对结果
         if (ref_sequences.size() == 1) {
+            // 记录“最终输出”的 CIGAR 和参考索引，便于批处理阶段复用/统计
+            out_cigar = initial_cigar;
+            out_ref_idx = 0;
+
             if (cigar::hasInsertion(initial_cigar)) {
                 writeSamRecord(q, initial_cigar, consensus_seq.id, out_insertion);
             } else {
@@ -381,6 +391,9 @@ namespace align {
 
         // 多参考序列 + keep_length：保留与最佳参考的比对结果
         if (keep_length) {
+            out_cigar = initial_cigar;
+            out_ref_idx = static_cast<int>(best_ref_idx);
+
             if (cigar::hasInsertion(initial_cigar)) {
                 writeSamRecord(q, initial_cigar, best_ref.id, out_insertion);
             } else {
@@ -395,10 +408,126 @@ namespace align {
             consensus_profile,consensus_seq.seq, q.seq, consensus_similarity,
             &consensus_minimizer, &query_minimizer);
 
+        out_cigar = recheck_cigar;
+        out_ref_idx = -1; // 使用共识作为最终参考，避免误解为某条原始参考序列索引
+
         if (cigar::hasInsertion(recheck_cigar)) {
             writeSamRecord(q, recheck_cigar, consensus_seq.id, out_insertion);
         } else {
             writeSamRecord(q, recheck_cigar, consensus_seq.id, out);
+        }
+    }
+
+    bool RefAligner::applyCigarToProfile(
+        const std::string& query_seq,
+        const cigar::Cigar_t& cigar,
+        ProfileMatrix& target_profile)
+    {
+        // 关键约束：这里只做“计数累加”，不改变 profile 的列数/维度，避免影响现有比对逻辑。
+        const std::size_t profile_len = static_cast<std::size_t>(target_profile.len);
+        const std::size_t profile_dim = static_cast<std::size_t>(target_profile.dim);
+
+        if (profile_dim == 0 || target_profile.prof.size() != profile_len * profile_dim) {
+            return false;
+        }
+
+        std::size_t ref_pos = 0;
+        std::size_t qry_pos = 0;
+
+        for (const cigar::CigarUnit unit : cigar) {
+            char op = '\0';
+            std::uint32_t len = 0;
+            cigar::intToCigar(unit, op, len);
+
+            switch (op) {
+                case 'M':
+                case '=':
+                case 'X': {
+                    // M/=/X 同时消耗参考和 query：把 query 当前碱基累加到对应参考列。
+                    for (std::uint32_t k = 0; k < len; ++k) {
+                        if (ref_pos >= profile_len || qry_pos >= query_seq.size()) {
+                            return false;
+                        }
+                        const std::size_t base_idx = static_cast<std::size_t>(
+                            align::ScoreChar2Idx[static_cast<unsigned char>(query_seq[qry_pos])]);
+                        ++target_profile.prof[ref_pos * profile_dim + base_idx];
+                        ++ref_pos;
+                        ++qry_pos;
+                    }
+                    break;
+                }
+                case 'D':
+                case 'N': {
+                    // D/N 只消耗参考：该列没有 query 碱基贡献，仅推进参考坐标。
+                    ref_pos += static_cast<std::size_t>(len);
+                    if (ref_pos > profile_len) {
+                        return false;
+                    }
+                    break;
+                }
+                case 'I':
+                case 'S': {
+                    // I/S 只消耗 query：不对应参考列，不能写入 profile，直接推进 query 坐标。
+                    qry_pos += static_cast<std::size_t>(len);
+                    if (qry_pos > query_seq.size()) {
+                        return false;
+                    }
+                    break;
+                }
+                case 'H':
+                case 'P': {
+                    // H/P 不消耗 query 序列字符串内容，也不消耗参考列，保持坐标不变。
+                    break;
+                }
+                default:
+                    return false;
+            }
+        }
+
+        // 与目标 profile 对齐时，参考消耗长度必须精确覆盖 profile 全长，避免越界和错列更新。
+        return ref_pos == profile_len;
+    }
+
+    void RefAligner::updateProfilesFromChunk(
+        const std::vector<seq_io::SeqRecord>& chunk,
+        const std::vector<cigar::Cigar_t>& cigar_chunk,
+        const std::vector<int>& ref_idx_chunk)
+    {
+        if (chunk.size() != cigar_chunk.size() || chunk.size() != ref_idx_chunk.size()) {
+            throw std::runtime_error("updateProfilesFromChunk: chunk/cigar/ref_idx size mismatch");
+        }
+
+        // 串行更新共享 profile：避免在并行区对同一 profile 加锁，减少锁竞争与缓存抖动。
+        for (std::size_t i = 0; i < chunk.size(); ++i) {
+            if (cigar_chunk[i].empty()) {
+                continue;
+            }
+
+            ProfileMatrix* target_profile = nullptr;
+            if (ref_idx_chunk[i] == -1) {
+                // -1 表示最终参考为共识序列，更新 consensus_profile。
+                target_profile = &consensus_profile;
+            } else if (ref_idx_chunk[i] >= 0 &&
+                       static_cast<std::size_t>(ref_idx_chunk[i]) < ref_profile.size()) {
+                // 非负索引表示命中某条参考，更新对应 ref_profile[idx]。
+                target_profile = &ref_profile[static_cast<std::size_t>(ref_idx_chunk[i])];
+            } else {
+#ifdef _DEBUG
+                spdlog::debug("updateProfilesFromChunk: skip invalid ref_idx={} at i={}",
+                              ref_idx_chunk[i], i);
+#endif
+                continue;
+            }
+
+            if (applyCigarToProfile(chunk[i].seq, cigar_chunk[i], *target_profile)) {
+                // depth 表示累计纳入 profile 的序列数，成功更新一条后再增加。
+                ++target_profile->depth;
+            } else {
+#ifdef _DEBUG
+                spdlog::debug("updateProfilesFromChunk: skip invalid cigar for query={} at i={}",
+                              chunk[i].id, i);
+#endif
+            }
         }
     }
 
@@ -575,6 +704,8 @@ namespace align {
         // 流式读取 + 批处理并行
         seq_io::KseqReader reader(qry_fasta_path);
         std::vector<seq_io::SeqRecord> chunk;
+        std::vector<cigar::Cigar_t> cigar_chunk;
+        std::vector<int> ref_idx_chunk;
         chunk.reserve(batch_size);
 
         ProgressBar progress("align");
@@ -593,7 +724,12 @@ namespace align {
             }
             if (chunk.empty()) break;
 
-#pragma omp parallel default(none) shared(outs, outs_with_insertion, chunk)
+            // 为本批次按索引预分配结果槽位，保证并行区内“每个 i 独占写入”无竞态
+            cigar_chunk.clear();
+            cigar_chunk.resize(chunk.size());
+            ref_idx_chunk.assign(chunk.size(), -1);
+
+#pragma omp parallel default(none) shared(outs, outs_with_insertion, chunk, cigar_chunk, ref_idx_chunk)
             {
                 const int tid = omp_get_thread_num();
                 auto& out = *outs[static_cast<std::size_t>(tid)];
@@ -602,9 +738,17 @@ namespace align {
 #pragma omp for schedule(dynamic, 1)
 
                 for (std::int64_t i = 0; i < static_cast<std::int64_t>(chunk.size()); ++i) {
-                    alignOneQueryToProfile(chunk[static_cast<std::size_t>(i)], out, out_insertion);
+                    alignOneQueryToProfile(
+                        chunk[static_cast<std::size_t>(i)],
+                        out,
+                        out_insertion,
+                        cigar_chunk[static_cast<std::size_t>(i)],
+                        ref_idx_chunk[static_cast<std::size_t>(i)]);
                 }
             }
+
+            // 根据本批次对齐结果增量更新 profile，供后续批次选择参考和 profile 比对使用。
+            updateProfilesFromChunk(chunk, cigar_chunk, ref_idx_chunk);
 
             const std::size_t chunk_size = chunk.size();
 

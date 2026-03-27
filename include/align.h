@@ -169,6 +169,11 @@ namespace align {
     cigar::Cigar_t globalAlignSeq2Profile(const ProfileMatrix& ref,
                                     const std::string& ref_string,
                                   const std::string& query,
+                                  const anchor::Anchors& anchors);
+
+    cigar::Cigar_t globalAlignSeq2ProfileParallel(const ProfileMatrix& ref,
+                                    const std::string& ref_string,
+                                  const std::string& query,
                                   const anchor::Anchors& anchors,
                                   int thread = 1);
 
@@ -225,8 +230,21 @@ namespace align {
 
         void alignOneQueryToProfile(const seq_io::SeqRecord& q,
                                seq_io::SeqWriter& out,
-                               seq_io::SeqWriter& out_insertion) const;
+                               seq_io::SeqWriter& out_insertion,
+                               cigar::Cigar_t& out_cigar,
+                               int& out_ref_idx) const;
 
+        // 根据一个 chunk 的对齐结果增量更新 profile 计数（不改变 profile 形状）
+        void updateProfilesFromChunk(
+            const std::vector<seq_io::SeqRecord>& chunk,
+            const std::vector<cigar::Cigar_t>& cigar_chunk,
+            const std::vector<int>& ref_idx_chunk);
+
+        // 将单条 query 按 CIGAR 投影到 profile 列并累加碱基计数，成功返回 true
+        static bool applyCigarToProfile(
+            const std::string& query_seq,
+            const cigar::Cigar_t& cigar,
+            ProfileMatrix& target_profile);
 
         // 写入一条 SAM 记录
         void writeSamRecord(const seq_io::SeqRecord& q, const cigar::Cigar_t& cigar,

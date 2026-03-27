@@ -359,6 +359,137 @@ namespace align
     }
 
     cigar::Cigar_t globalAlignSeq2Profile(const ProfileMatrix& ref,
+                                const std::string& ref_string,
+                              const std::string& query,
+                              const anchor::Anchors& anchors)
+    {
+        align::AlignConfig cfg;
+        align::AlignConfig first_cfg;
+        first_cfg.flag = KSW_EZ_GENERIC_SC;
+
+        const std::size_t ref_len = ref_string.size();
+        const std::size_t qry_len = query.size();
+
+        // 链化锚点：获取最佳链
+        anchor::Anchors sorted_anchors = anchors;
+        anchor::ChainParams chain_params = anchor::default_chain_params();
+        anchor::Anchors chain_anchors = anchor::chainAnchors(sorted_anchors, chain_params);
+        if (chain_anchors.empty()) {
+            return globalAlignPSW(ref, query, cfg);
+        }
+
+        // 按 query 坐标排序
+        std::sort(chain_anchors.begin(), chain_anchors.end(),
+                  [](const anchor::Anchor& a, const anchor::Anchor& b) {
+                      if (a.pos_qry != b.pos_qry) return a.pos_qry < b.pos_qry;
+                      return a.pos_ref < b.pos_ref;
+                  });
+
+        cigar::Cigar_t result;
+        result.reserve(chain_anchors.size() * 2 + 2);
+
+        std::size_t ref_pos = 0;
+        std::size_t qry_pos = 0;
+
+        auto append_segment = [&](std::size_t ref_start, std::size_t ref_end,
+                                  std::size_t qry_start, std::size_t qry_end, align::AlignConfig seg_cfg) {
+            // 边界裁剪
+            ref_start = std::min(ref_start, ref_len);
+            ref_end = std::min(ref_end, ref_len);
+            qry_start = std::min(qry_start, qry_len);
+            qry_end = std::min(qry_end, qry_len);
+
+            if (ref_end < ref_start) ref_end = ref_start;
+            if (qry_end < qry_start) qry_end = qry_start;
+
+            //const std::string seg_ref = ref_string.substr(ref_start, ref_end - ref_start);
+            std::size_t seg_ref_len = ref_end - ref_start;
+            ProfileMatrix seg_ref;
+            seg_ref.len = static_cast<int>(seg_ref_len);
+            seg_ref.dim = ref.dim;
+            seg_ref.depth = ref.depth;
+            if (seg_ref_len > 0) {
+                const std::size_t offset = ref_start * static_cast<std::size_t>(ref.dim);
+                const std::size_t count = seg_ref_len * static_cast<std::size_t>(ref.dim);
+                seg_ref.prof.assign(ref.prof.begin() + static_cast<std::ptrdiff_t>(offset),
+                                    ref.prof.begin() + static_cast<std::ptrdiff_t>(offset + count));
+            }
+
+            const std::string seg_qry = query.substr(qry_start, qry_end - qry_start);
+
+            cigar::Cigar_t seg_cigar = globalAlignPSW(seg_ref, seg_qry, seg_cfg);
+
+            // 用 CIGAR 反推消耗长度
+
+            const std::size_t seg_qry_len = seg_qry.size();
+            const std::size_t c_ref = cigar::getRefLength(seg_cigar);
+            const std::size_t c_qry = cigar::getQueryLength(seg_cigar);
+
+            if (c_ref != seg_ref_len || c_qry != seg_qry_len) {
+#ifdef _DEBUG
+                spdlog::warn("globalAlignSeq2Profile(seg): segment cigar mismatch (expected ref:{}/qry:{}, got ref:{}/qry:{}); forcing robust fallback for this segment",
+                             seg_ref_len, seg_qry_len, c_ref, c_qry);
+#endif
+                // 兜底策略：Query 全 I、Ref 全 D
+                cigar::Cigar_t forced_cigar;
+                if (seg_qry_len > 0) {
+                    forced_cigar.push_back(cigar::cigarToInt('I', static_cast<uint32_t>(seg_qry_len)));
+                }
+                if (seg_ref_len > 0) {
+                    forced_cigar.push_back(cigar::cigarToInt('D', static_cast<uint32_t>(seg_ref_len)));
+                }
+                cigar::appendCigar(result, forced_cigar);
+
+                ref_pos = ref_end;
+                qry_pos = qry_end;
+                return;
+            }
+
+            cigar::appendCigar(result, seg_cigar);
+
+            ref_pos = ref_start + c_ref;
+            qry_pos = qry_start + c_qry;
+        };
+
+        // 左端：起点到第一个锚点
+        {
+            const auto& first = chain_anchors.front();
+            append_segment(ref_pos, first.pos_ref, qry_pos, first.pos_qry, first_cfg);
+        }
+
+        // 逐锚点：处理 span 和 gap
+        for (std::size_t i = 0; i < chain_anchors.size(); ++i) {
+            const auto& a = chain_anchors[i];
+
+            const std::size_t a_ref_start = static_cast<std::size_t>(a.pos_ref);
+            const std::size_t a_qry_start = static_cast<std::size_t>(a.pos_qry);
+            const std::size_t a_ref_end = a_ref_start + static_cast<std::size_t>(a.span);
+            const std::size_t a_qry_end = a_qry_start + static_cast<std::size_t>(a.span);
+
+            append_segment(ref_pos, a_ref_end, qry_pos, a_qry_end, cfg);
+
+            if (i + 1 < chain_anchors.size()) {
+                const auto& b = chain_anchors[i + 1];
+                append_segment(ref_pos, b.pos_ref, qry_pos, b.pos_qry, cfg);
+            }
+        }
+
+        // 右端：最后一个锚点到末尾
+        append_segment(ref_pos, ref_len, qry_pos, qry_len, cfg);
+
+        // 最终一致性检查
+        const std::size_t total_ref = cigar::getRefLength(result);
+        const std::size_t total_qry = cigar::getQueryLength(result);
+        if (total_ref != ref_len || total_qry != qry_len) {
+            spdlog::error("globalAlignSeq2Seq: final cigar mismatch (ref:{}/{}, qry:{}/{}), fallback to global",
+                         total_ref, ref_len, total_qry, qry_len);
+            return globalAlignPSW(ref, query, cfg);
+        }
+
+        return result;
+    }
+
+    cigar::Cigar_t globalAlignSeq2ProfileParallel(const ProfileMatrix& ref,
                                     const std::string& ref_string,
                                   const std::string& query,
                                   const anchor::Anchors& anchors,
@@ -477,10 +608,10 @@ namespace align
         std::vector<cigar::Cigar_t> task_cigars(tasks.size());
 
         // 4) 并行计算每个分段：每个任务只写自己的索引，避免锁与竞争。
-// #ifdef _OPENMP
+#ifdef _OPENMP
         const int use_threads = thread > 0 ? thread : omp_get_max_threads();
-// #pragma omp parallel for default(none) shared(tasks, ref, ref_string, query, task_cigars) num_threads(use_threads) schedule(static)
-// #endif
+#pragma omp parallel for default(none) shared(tasks, ref, ref_string, query, task_cigars) num_threads(use_threads) schedule(static)
+#endif
         for (int i = 0; i < static_cast<int>(tasks.size()); ++i) {
             const SegmentTask& t = tasks[static_cast<std::size_t>(i)];
             const std::size_t seg_ref_len = t.ref_end - t.ref_start;
@@ -498,7 +629,7 @@ namespace align
             }
 
             const std::string seg_qry = query.substr(t.qry_start, seg_qry_len);
-            const std::string seg_ref_1 = ref_string.substr(t.ref_start, seg_ref_len);
+            //const std::string seg_ref_1 = ref_string.substr(t.ref_start, seg_ref_len);
             cigar::Cigar_t seg_cigar = globalAlignPSW(seg_ref, seg_qry, t.seg_cfg);
 
             std::string c_str1 = cigar::cigarToString(seg_cigar);
@@ -527,13 +658,13 @@ namespace align
 
         // 5) 串行按任务索引合并，保证输出确定性（不依赖并行执行顺序）。
         cigar::Cigar_t result;
-        int i = 0;
+        // int i = 0;
         result.reserve(tasks.size() * 2 + 2);
         for (const auto& c : task_cigars) {
-            std::string c_str = cigar::cigarToString(c);
+            // std::string c_str = cigar::cigarToString(c);
             cigar::appendCigar(result, c);
-            std::string cigar_str = cigar::cigarToString(result);
-            i++;
+            // std::string cigar_str = cigar::cigarToString(result);
+            // i++;
         }
 
         std::string cigar_str = cigar::cigarToString(result);
