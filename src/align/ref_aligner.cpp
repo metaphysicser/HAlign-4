@@ -711,6 +711,46 @@ namespace align {
         ProgressBar progress("align");
         progress.tick(0);
 
+        // 预热阶段：先串行处理固定数量的序列，并且“每比对一条就更新一次 profile”。
+        // 目的：让后续 batch 并行阶段在更有信息量的 profile 上工作，降低冷启动阶段的偏差。
+        constexpr std::size_t profile_warmup_count = 1000;
+        std::vector<seq_io::SeqRecord> warmup_chunk(1);
+        std::vector<cigar::Cigar_t> warmup_cigar(1);
+        std::vector<int> warmup_ref_idx(1, -1);
+
+        std::size_t warmup_processed = 0;
+        seq_io::SeqRecord warmup_rec;
+        auto& warmup_out = *outs[0];
+        auto& warmup_out_insertion = *outs_with_insertion[0];
+
+        while (warmup_processed < profile_warmup_count && reader.next(warmup_rec)) {
+            warmup_chunk[0] = std::move(warmup_rec);
+
+            // 串行比对一条，得到该条最终使用的 CIGAR/参考索引。
+            alignOneQueryToProfile(
+                warmup_chunk[0],
+                warmup_out,
+                warmup_out_insertion,
+                warmup_cigar[0],
+                warmup_ref_idx[0]);
+
+            // 每条序列比对完成后立即更新一次 profile，严格满足“比对一次、更新一次”。
+            updateProfilesFromChunk(warmup_chunk, warmup_cigar, warmup_ref_idx);
+
+            warmup_cigar[0].clear();
+            warmup_ref_idx[0] = -1;
+            ++warmup_processed;
+            progress.tick();
+        }
+
+        // 预热阶段统一刷新一次，避免仅 0 号 writer 长时间缓存。
+        warmup_out.flush();
+        warmup_out_insertion.flush();
+
+#ifdef _DEBUG
+        spdlog::debug("alignSeq2Profile warmup processed {} sequences", warmup_processed);
+#endif
+
         while (true) {
             chunk.clear();
             chunk.shrink_to_fit();
