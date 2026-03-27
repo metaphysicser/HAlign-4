@@ -151,7 +151,7 @@ int main(int argc, char** argv) {
                          (cli_batch_size > 0 ? cli_batch_size : 25600U));
             ref_aligner.alignSeq2Seq(opt.input, cli_batch_size);
         } else {
-            const std::size_t seq2profile_batch_size = (cli_batch_size > 0) ? cli_batch_size : 128U;
+            const std::size_t seq2profile_batch_size = (cli_batch_size > 0) ? cli_batch_size : 25600U;
             spdlog::info("Alignment mode: seq2profile, batch_size={}", seq2profile_batch_size);
             ref_aligner.alignSeq2Profile(opt.input, seq2profile_batch_size);
         }
