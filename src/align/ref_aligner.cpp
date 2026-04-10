@@ -21,7 +21,8 @@ namespace align {
                            int kmer_size, int window_size,
                            int sketch_size, bool noncanonical,
                            int threads, std::string msa_cmd,
-                           bool keep_length)
+                           bool keep_length,
+                           bool enable_wfa)
         : work_dir(work_dir),
           kmer_size(kmer_size),
           window_size(window_size),
@@ -29,7 +30,8 @@ namespace align {
           noncanonical(noncanonical),
           threads(threads),
           msa_cmd(std::move(msa_cmd)),
-          keep_length(keep_length)
+          keep_length(keep_length),
+          enable_wfa(enable_wfa)
     {
         // 加载参考序列并构建 sketch/minimizer 索引
         seq_io::KseqReader reader(ref_fasta_path);
@@ -39,9 +41,11 @@ namespace align {
                                                    noncanonical, random_seed);
             auto minimizer = minimizer::extractMinimizer(rec.seq, kmer_size,
                                                          window_size, noncanonical);
+            ref_profile.push_back(ProfileMatrix(rec.seq));
             ref_sequences.push_back(std::move(rec));
             ref_sketch.push_back(std::move(sketch));
             ref_minimizers.push_back(std::move(minimizer));
+
         }
 
         // 设置共识序列生成的文件路径
@@ -59,6 +63,7 @@ namespace align {
 
         consensus_seq.id = "consensus";
         consensus_seq.seq = std::move(consensus_string);
+        consensus_profile = ProfileMatrix(consensus_seq.seq);
 
         // 预计算共识序列的 sketch 和 minimizer，避免重复计算
         consensus_sketch = mash::sketchFromSequence(
@@ -83,12 +88,13 @@ namespace align {
             true,
             opt.threads,
             opt.msa_cmd,
-            opt.keep_length)
+            opt.keep_length,
+            opt.wfa)
     {
     }
 
     // 全局比对：生成 minimizer 锚点，执行比对
-    cigar::Cigar_t RefAligner::globalAlign(const std::string& ref,
+    cigar::Cigar_t RefAligner::Seq2SeqWithAnchor(const std::string& ref,
                                            const std::string& query,
                                            double similarity,
                                            const SeedHits* ref_minimizer,
@@ -111,7 +117,7 @@ namespace align {
         }
 
         const anchor::Anchors anchors = minimizer::collect_anchors(*ref_mz_ptr, *qry_mz_ptr);
-        cigar::Cigar_t result = globalAlignMM2(ref, query, anchors);
+        cigar::Cigar_t result = globalAlignSeq2Seq(ref, query, anchors);
 
 #ifdef _DEBUG
         const std::size_t cigar_ref_len = cigar::getRefLength(result);
@@ -122,6 +128,44 @@ namespace align {
         }
 #endif
         return result;
+    }
+
+    cigar::Cigar_t RefAligner::Seq2ProfileWithAnchor(const ProfileMatrix& ref,
+                                        const std::string& ref_string,
+                                       const std::string& query,
+                                       double similarity,
+                                       const SeedHits* ref_minimizer,
+                                       const SeedHits* query_minimizer) const
+    {
+        const SeedHits* ref_mz_ptr = ref_minimizer;
+        const SeedHits* qry_mz_ptr = query_minimizer;
+
+        SeedHits ref_mz_tmp;
+        SeedHits qry_mz_tmp;
+
+        // 若 minimizer 为空，现场计算
+        if (ref_mz_ptr == nullptr || ref_mz_ptr->empty()) {
+            ref_mz_tmp = minimizer::extractMinimizer(ref_string, kmer_size, window_size, noncanonical);
+            ref_mz_ptr = &ref_mz_tmp;
+        }
+        if (qry_mz_ptr == nullptr || qry_mz_ptr->empty()) {
+            qry_mz_tmp = minimizer::extractMinimizer(query, kmer_size, window_size, noncanonical);
+            qry_mz_ptr = &qry_mz_tmp;
+        }
+
+        const anchor::Anchors anchors = minimizer::collect_anchors(*ref_mz_ptr, *qry_mz_ptr);
+        cigar::Cigar_t result = globalAlignSeq2Profile(ref, ref_string, query, anchors);
+
+#ifdef _DEBUG
+        const std::size_t cigar_ref_len = cigar::getRefLength(result);
+        const std::size_t cigar_qry_len = cigar::getQueryLength(result);
+        if (cigar_ref_len != ref_string.size() || cigar_qry_len != query.size()) {
+            spdlog::debug("globalAlign: CIGAR length mismatch! ref:{} vs {}, query:{} vs {}",
+                         ref_string.size(), cigar_ref_len, query.size(), cigar_qry_len);
+        }
+#endif
+        return result;
+
     }
 
     // 写入 SAM 记录
@@ -244,7 +288,7 @@ namespace align {
         }
 
         // 执行全局比对
-        cigar::Cigar_t initial_cigar = globalAlign(
+        cigar::Cigar_t initial_cigar = Seq2SeqWithAnchor(
             best_ref.seq, q.seq, best_jaccard,
             &ref_minimizers[best_ref_idx],
             &query_minimizer);
@@ -271,7 +315,7 @@ namespace align {
 
         // 多参考序列 + 非 keep_length：有插入时与共识序列二次比对
         const double consensus_similarity = mash::jaccard(qsk, consensus_sketch);
-        cigar::Cigar_t recheck_cigar = globalAlign(
+        cigar::Cigar_t recheck_cigar = Seq2SeqWithAnchor(
             consensus_seq.seq, q.seq, consensus_similarity,
             &consensus_minimizer, &query_minimizer);
 
@@ -282,12 +326,217 @@ namespace align {
         }
     }
 
+    void RefAligner::alignOneQueryToProfile(const seq_io::SeqRecord& q,
+                       seq_io::SeqWriter& out,
+                       seq_io::SeqWriter& out_insertion,
+                       cigar::Cigar_t& out_cigar,
+                       int& out_ref_idx) const
+    {
+        // 初始化输出占位，便于调用方在调试时识别“未写入”状态
+        out_cigar.clear();
+        out_ref_idx = -1;
+
+        // 计算 query 的 sketch 和 minimizer
+        const mash::Sketch qsk = mash::sketchFromSequence(
+            q.seq,
+            static_cast<std::size_t>(kmer_size),
+            static_cast<std::size_t>(sketch_size),
+            noncanonical,
+            random_seed);
+
+        const SeedHits query_minimizer = minimizer::extractMinimizer(
+            q.seq, kmer_size, window_size, noncanonical);
+
+        // 选择最相似的参考序列
+        align::ProfileMatrix best_ref_profile;
+        seq_io::SeqRecord best_ref;
+        double best_jaccard = -1.0;
+        std::size_t best_ref_idx = 0;
+
+        if (ref_sequences.size() > 1) {
+            for (std::size_t r = 0; r < ref_sketch.size(); ++r) {
+                const double j = mash::jaccard(qsk, ref_sketch[r]);
+                if (j > best_jaccard) {
+                    best_jaccard = j;
+                    best_ref_idx = r;
+                }
+            }
+            best_ref_profile = ref_profile[best_ref_idx];
+            best_ref = ref_sequences[best_ref_idx];
+        } else {
+            best_ref_profile = consensus_profile;
+            best_ref = consensus_seq;
+            best_jaccard = mash::jaccard(qsk, consensus_sketch);
+        }
+
+        // 执行全局比对
+        cigar::Cigar_t initial_cigar = Seq2ProfileWithAnchor(
+            best_ref_profile, best_ref.seq, q.seq, best_jaccard,
+            &ref_minimizers[best_ref_idx],
+            &query_minimizer);
+
+        // 单参考序列：直接使用初始比对结果
+        if (ref_sequences.size() == 1) {
+            // 记录“最终输出”的 CIGAR 和参考索引，便于批处理阶段复用/统计
+            out_cigar = initial_cigar;
+            out_ref_idx = 0;
+
+            if (cigar::hasInsertion(initial_cigar)) {
+                writeSamRecord(q, initial_cigar, consensus_seq.id, out_insertion);
+            } else {
+                writeSamRecord(q, initial_cigar, consensus_seq.id, out);
+            }
+            return;
+        }
+
+        // 多参考序列 + keep_length：保留与最佳参考的比对结果
+        if (keep_length) {
+            out_cigar = initial_cigar;
+            out_ref_idx = static_cast<int>(best_ref_idx);
+
+            if (cigar::hasInsertion(initial_cigar)) {
+                writeSamRecord(q, initial_cigar, best_ref.id, out_insertion);
+            } else {
+                writeSamRecord(q, initial_cigar, best_ref.id, out);
+            }
+            return;
+        }
+
+        // 多参考序列 + 非 keep_length：有插入时与共识序列二次比对
+        const double consensus_similarity = mash::jaccard(qsk, consensus_sketch);
+        cigar::Cigar_t recheck_cigar = Seq2ProfileWithAnchor(
+            consensus_profile,consensus_seq.seq, q.seq, consensus_similarity,
+            &consensus_minimizer, &query_minimizer);
+
+        out_cigar = recheck_cigar;
+        out_ref_idx = -1; // 使用共识作为最终参考，避免误解为某条原始参考序列索引
+
+        if (cigar::hasInsertion(recheck_cigar)) {
+            writeSamRecord(q, recheck_cigar, consensus_seq.id, out_insertion);
+        } else {
+            writeSamRecord(q, recheck_cigar, consensus_seq.id, out);
+        }
+    }
+
+    bool RefAligner::applyCigarToProfile(
+        const std::string& query_seq,
+        const cigar::Cigar_t& cigar,
+        ProfileMatrix& target_profile)
+    {
+        // 关键约束：这里只做“计数累加”，不改变 profile 的列数/维度，避免影响现有比对逻辑。
+        const std::size_t profile_len = static_cast<std::size_t>(target_profile.len);
+        const std::size_t profile_dim = static_cast<std::size_t>(target_profile.dim);
+
+        if (profile_dim == 0 || target_profile.prof.size() != profile_len * profile_dim) {
+            return false;
+        }
+
+        std::size_t ref_pos = 0;
+        std::size_t qry_pos = 0;
+
+        for (const cigar::CigarUnit unit : cigar) {
+            char op = '\0';
+            std::uint32_t len = 0;
+            cigar::intToCigar(unit, op, len);
+
+            switch (op) {
+                case 'M':
+                case '=':
+                case 'X': {
+                    // M/=/X 同时消耗参考和 query：把 query 当前碱基累加到对应参考列。
+                    for (std::uint32_t k = 0; k < len; ++k) {
+                        if (ref_pos >= profile_len || qry_pos >= query_seq.size()) {
+                            return false;
+                        }
+                        const std::size_t base_idx = static_cast<std::size_t>(
+                            align::ScoreChar2Idx[static_cast<unsigned char>(query_seq[qry_pos])]);
+                        ++target_profile.prof[ref_pos * profile_dim + base_idx];
+                        ++ref_pos;
+                        ++qry_pos;
+                    }
+                    break;
+                }
+                case 'D':
+                case 'N': {
+                    // D/N 只消耗参考：该列没有 query 碱基贡献，仅推进参考坐标。
+                    ref_pos += static_cast<std::size_t>(len);
+                    if (ref_pos > profile_len) {
+                        return false;
+                    }
+                    break;
+                }
+                case 'I':
+                case 'S': {
+                    // I/S 只消耗 query：不对应参考列，不能写入 profile，直接推进 query 坐标。
+                    qry_pos += static_cast<std::size_t>(len);
+                    if (qry_pos > query_seq.size()) {
+                        return false;
+                    }
+                    break;
+                }
+                case 'H':
+                case 'P': {
+                    // H/P 不消耗 query 序列字符串内容，也不消耗参考列，保持坐标不变。
+                    break;
+                }
+                default:
+                    return false;
+            }
+        }
+
+        // 与目标 profile 对齐时，参考消耗长度必须精确覆盖 profile 全长，避免越界和错列更新。
+        return ref_pos == profile_len;
+    }
+
+    void RefAligner::updateProfilesFromChunk(
+        const std::vector<seq_io::SeqRecord>& chunk,
+        const std::vector<cigar::Cigar_t>& cigar_chunk,
+        const std::vector<int>& ref_idx_chunk)
+    {
+        if (chunk.size() != cigar_chunk.size() || chunk.size() != ref_idx_chunk.size()) {
+            throw std::runtime_error("updateProfilesFromChunk: chunk/cigar/ref_idx size mismatch");
+        }
+
+        // 串行更新共享 profile：避免在并行区对同一 profile 加锁，减少锁竞争与缓存抖动。
+        for (std::size_t i = 0; i < chunk.size(); ++i) {
+            if (cigar_chunk[i].empty()) {
+                continue;
+            }
+
+            ProfileMatrix* target_profile = nullptr;
+            if (ref_idx_chunk[i] == -1) {
+                // -1 表示最终参考为共识序列，更新 consensus_profile。
+                target_profile = &consensus_profile;
+            } else if (ref_idx_chunk[i] >= 0 &&
+                       static_cast<std::size_t>(ref_idx_chunk[i]) < ref_profile.size()) {
+                // 非负索引表示命中某条参考，更新对应 ref_profile[idx]。
+                target_profile = &ref_profile[static_cast<std::size_t>(ref_idx_chunk[i])];
+            } else {
+#ifdef _DEBUG
+                spdlog::debug("updateProfilesFromChunk: skip invalid ref_idx={} at i={}",
+                              ref_idx_chunk[i], i);
+#endif
+                continue;
+            }
+
+            if (applyCigarToProfile(chunk[i].seq, cigar_chunk[i], *target_profile)) {
+                // depth 表示累计纳入 profile 的序列数，成功更新一条后再增加。
+                ++target_profile->depth;
+            } else {
+#ifdef _DEBUG
+                spdlog::debug("updateProfilesFromChunk: skip invalid cigar for query={} at i={}",
+                              chunk[i].id, i);
+#endif
+            }
+        }
+    }
+
     // 批量比对 query 序列 - 并行处理，每线程独立输出
-    void RefAligner::alignQueryToRef(const FilePath& qry_fasta_path, std::size_t batch_size)
+    void RefAligner::alignSeq2Seq(const FilePath& qry_fasta_path, std::size_t batch_size)
     {
         // 参数检查和初始化
         if (ref_sequences.empty() || ref_sketch.empty()) {
-            throw std::runtime_error("RefAligner::alignQueryToRef: 参考序列为空");
+            throw std::runtime_error("RefAligner::alignQueryToRef: reference sequence is empty");
         }
 
         constexpr std::size_t default_batch_size = 2560;
@@ -370,6 +619,176 @@ namespace align {
                     alignOneQueryToRef(chunk[static_cast<std::size_t>(i)], out, out_insertion);
                 }
             }
+
+            const std::size_t chunk_size = chunk.size();
+
+            // 刷新所有 writer
+            for (auto& w : outs) {
+                w->flush();
+            }
+            for (auto& w : outs_with_insertion) {
+                w->flush();
+            }
+
+            std::vector<seq_io::SeqRecord>().swap(chunk);
+            progress.tick(chunk_size);
+        }
+
+        // 完成并确保所有数据写入磁盘
+        progress.done();
+        spdlog::info("Alignment completed");
+
+        for (auto& w : outs) {
+            if (w) w->flush();
+        }
+        for (auto& w : outs_with_insertion) {
+            if (w) w->flush();
+        }
+    }
+
+    void RefAligner::alignSeq2Profile(const FilePath& qry_fasta_path, std::size_t batch_size)
+    {
+        // 参数检查和初始化
+        if (ref_sequences.empty() || ref_sketch.empty()) {
+            throw std::runtime_error("RefAligner::alignQueryToRef: reference sequence is empty");
+        }
+
+        constexpr std::size_t default_batch_size = 2560;
+        if (batch_size == 0) {
+            batch_size = default_batch_size;
+        }
+
+        // 设置线程数
+        if (threads > 0) {
+            omp_set_num_threads(threads);
+        }
+        const int nthreads = std::max(1, omp_get_max_threads());
+
+        const FilePath result_dir = work_dir / RESULTS_DIR;
+        file_io::ensureDirectoryExists(result_dir, "result directory");
+
+        spdlog::info("Starting alignment: {} threads, batch size {}", nthreads, batch_size);
+
+        // 为每个线程创建独立的输出文件
+        outs_path.clear();
+        outs_path.resize(static_cast<std::size_t>(nthreads));
+        outs_with_insertion_path.clear();
+        outs_with_insertion_path.resize(static_cast<std::size_t>(nthreads));
+
+        std::vector<std::unique_ptr<seq_io::SeqWriter>> outs;
+        std::vector<std::unique_ptr<seq_io::SeqWriter>> outs_with_insertion;
+        outs.resize(static_cast<std::size_t>(nthreads));
+        outs_with_insertion.resize(static_cast<std::size_t>(nthreads));
+
+        for (int tid = 0; tid < nthreads; ++tid) {
+            const FilePath out_path = result_dir /
+                (THREAD_SAM_PREFIX + std::to_string(tid) + THREAD_SAM_SUFFIX);
+            const FilePath out_path_insertion = result_dir /
+                (THREAD_SAM_PREFIX + std::to_string(tid) + THREAD_INSERTION_SAM_SUFFIX);
+
+            outs_path[static_cast<std::size_t>(tid)] = out_path;
+            outs_with_insertion_path[static_cast<std::size_t>(tid)] = out_path_insertion;
+
+            auto tmp = seq_io::SeqWriter::Sam(out_path);
+            auto tmp_insertion = seq_io::SeqWriter::Sam(out_path_insertion);
+
+            outs[static_cast<std::size_t>(tid)] =
+                std::make_unique<seq_io::SeqWriter>(std::move(tmp));
+            outs[static_cast<std::size_t>(tid)]->writeSamHeader("@HD\tVN:1.6\tSO:unknown");
+
+            outs_with_insertion[static_cast<std::size_t>(tid)] =
+                std::make_unique<seq_io::SeqWriter>(std::move(tmp_insertion));
+            outs_with_insertion[static_cast<std::size_t>(tid)]->writeSamHeader("@HD\tVN:1.6\tSO:unknown");
+        }
+
+        // 流式读取 + 批处理并行
+        seq_io::KseqReader reader(qry_fasta_path);
+        std::vector<seq_io::SeqRecord> chunk;
+        std::vector<cigar::Cigar_t> cigar_chunk;
+        std::vector<int> ref_idx_chunk;
+        chunk.reserve(batch_size);
+
+        ProgressBar progress("align");
+        progress.tick(0);
+
+        // 预热阶段：先串行处理固定数量的序列，并且“每比对一条就更新一次 profile”。
+        // 目的：让后续 batch 并行阶段在更有信息量的 profile 上工作，降低冷启动阶段的偏差。
+        constexpr std::size_t profile_warmup_count = 1000;
+        std::vector<seq_io::SeqRecord> warmup_chunk(1);
+        std::vector<cigar::Cigar_t> warmup_cigar(1);
+        std::vector<int> warmup_ref_idx(1, -1);
+
+        std::size_t warmup_processed = 0;
+        seq_io::SeqRecord warmup_rec;
+        auto& warmup_out = *outs[0];
+        auto& warmup_out_insertion = *outs_with_insertion[0];
+
+        while (warmup_processed < profile_warmup_count && reader.next(warmup_rec)) {
+            warmup_chunk[0] = std::move(warmup_rec);
+
+            // 串行比对一条，得到该条最终使用的 CIGAR/参考索引。
+            alignOneQueryToProfile(
+                warmup_chunk[0],
+                warmup_out,
+                warmup_out_insertion,
+                warmup_cigar[0],
+                warmup_ref_idx[0]);
+
+            // 每条序列比对完成后立即更新一次 profile，严格满足“比对一次、更新一次”。
+            updateProfilesFromChunk(warmup_chunk, warmup_cigar, warmup_ref_idx);
+
+            warmup_cigar[0].clear();
+            warmup_ref_idx[0] = -1;
+            ++warmup_processed;
+            progress.tick();
+        }
+
+        // 预热阶段统一刷新一次，避免仅 0 号 writer 长时间缓存。
+        warmup_out.flush();
+        warmup_out_insertion.flush();
+
+#ifdef _DEBUG
+        spdlog::debug("alignSeq2Profile warmup processed {} sequences", warmup_processed);
+#endif
+
+        while (true) {
+            chunk.clear();
+            chunk.shrink_to_fit();
+            chunk.reserve(batch_size);
+
+            // 读取一个批次
+            seq_io::SeqRecord rec;
+            for (std::size_t i = 0; i < batch_size; ++i) {
+                if (!reader.next(rec)) break;
+                chunk.push_back(std::move(rec));
+            }
+            if (chunk.empty()) break;
+
+            // 为本批次按索引预分配结果槽位，保证并行区内“每个 i 独占写入”无竞态
+            cigar_chunk.clear();
+            cigar_chunk.resize(chunk.size());
+            ref_idx_chunk.assign(chunk.size(), -1);
+
+#pragma omp parallel default(none) shared(outs, outs_with_insertion, chunk, cigar_chunk, ref_idx_chunk)
+            {
+                const int tid = omp_get_thread_num();
+                auto& out = *outs[static_cast<std::size_t>(tid)];
+                auto& out_insertion = *outs_with_insertion[static_cast<std::size_t>(tid)];
+
+#pragma omp for schedule(dynamic, 1)
+
+                for (std::int64_t i = 0; i < static_cast<std::int64_t>(chunk.size()); ++i) {
+                    alignOneQueryToProfile(
+                        chunk[static_cast<std::size_t>(i)],
+                        out,
+                        out_insertion,
+                        cigar_chunk[static_cast<std::size_t>(i)],
+                        ref_idx_chunk[static_cast<std::size_t>(i)]);
+                }
+            }
+
+            // 根据本批次对齐结果增量更新 profile，供后续批次选择参考和 profile 比对使用。
+            updateProfilesFromChunk(chunk, cigar_chunk, ref_idx_chunk);
 
             const std::size_t chunk_size = chunk.size();
 

@@ -143,6 +143,7 @@ namespace seq_io
             assignKstring(rec.id,   impl_->seq->name);
             assignKstring(rec.desc, impl_->seq->comment);
             assignKstring(rec.seq,  impl_->seq->seq);
+            rec.n_num = 0;
             return true;
         }
 
