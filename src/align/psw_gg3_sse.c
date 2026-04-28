@@ -1,6 +1,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <emmintrin.h>
+#include <stdalign.h>
 #include "psw.h"
 
 #ifndef PSW_NEG_INF_F
@@ -76,7 +77,7 @@ static inline int psw_make_norm_prof(void *km, const psw_prof_t *src, psw_prof_t
 	if (src == 0 || dst == 0 || src->prof == 0 || src->len < 0 || src->dim <= 0 || m <= 0 || scale <= 0) return 0;
 	if (src->dim < m) return 0;
 
-	prof = (uint32_t*)kmalloc(km, (size_t)src->len * src->dim * sizeof(uint32_t));
+	prof = (uint32_t *)kmalloc(km, (size_t)src->len * src->dim * sizeof(uint32_t));
 	if (prof == 0) return 0;
 
 	depth = src->depth > 0 ? (int32_t)src->depth : 1;
@@ -89,7 +90,8 @@ static inline int psw_make_norm_prof(void *km, const psw_prof_t *src, psw_prof_t
 				if (v < 0) v = 0;
 				if (v > scale) v = scale;
 				out[a] = (uint32_t)v;
-			} else out[a] = in[a];
+			}
+			else out[a] = in[a];
 		}
 	}
 
@@ -103,15 +105,15 @@ static inline int psw_make_norm_prof(void *km, const psw_prof_t *src, psw_prof_t
 static inline void psw_free_norm_prof(void *km, psw_prof_t *p)
 {
 	if (p && p->prof) {
-		kfree(km, (void*)p->prof);
+		kfree(km, (void *)p->prof);
 		p->prof = 0;
 	}
 }
 
 static inline int16_t psw_dot_scaled_sse_m5(const int16_t *x, const int16_t *y, int8_t scale_shift)
 {
-	__m128i xv = _mm_loadl_epi64((const __m128i*)x);
-	__m128i yv = _mm_loadl_epi64((const __m128i*)y);
+	__m128i xv = _mm_loadl_epi64((const __m128i *)x);
+	__m128i yv = _mm_loadl_epi64((const __m128i *)y);
 	__m128i madd = _mm_madd_epi16(xv, yv);
 
 	// Move lane1 to lane0 then accumulate.
@@ -138,16 +140,16 @@ static inline int32_t psw_dot_acc_sse_m20(const int16_t *x, const int16_t *y)
 	__m128i s = _mm_setzero_si128();
 	__m128i xv, yv;
 
-	xv = _mm_loadu_si128((const __m128i*)x);
-	yv = _mm_loadu_si128((const __m128i*)y);
+	xv = _mm_loadu_si128((const __m128i *)x);
+	yv = _mm_loadu_si128((const __m128i *)y);
 	s = _mm_add_epi32(s, _mm_madd_epi16(xv, yv));
 
-	xv = _mm_loadu_si128((const __m128i*)(x + 8));
-	yv = _mm_loadu_si128((const __m128i*)(y + 8));
+	xv = _mm_loadu_si128((const __m128i *)(x + 8));
+	yv = _mm_loadu_si128((const __m128i *)(y + 8));
 	s = _mm_add_epi32(s, _mm_madd_epi16(xv, yv));
 
-	xv = _mm_loadl_epi64((const __m128i*)(x + 16));
-	yv = _mm_loadl_epi64((const __m128i*)(y + 16));
+	xv = _mm_loadl_epi64((const __m128i *)(x + 16));
+	yv = _mm_loadl_epi64((const __m128i *)(y + 16));
 	s = _mm_add_epi32(s, _mm_madd_epi16(xv, yv));
 
 	return psw_hsum_epi32_sse2(s);
@@ -179,11 +181,11 @@ static inline int16_t psw_dot_scaled_sse(const int16_t *x, const int16_t *y, int
 	if (m == 20) return psw_dot_scaled_sse_m20(x, y, scale_shift);
 	if (m == 21) return psw_dot_scaled_sse_m21(x, y, scale_shift);
 	for (; i + 8 <= m; i += 8) {
-		__m128i xv = _mm_loadu_si128((const __m128i*)(x + i));
-		__m128i yv = _mm_loadu_si128((const __m128i*)(y + i));
+		__m128i xv = _mm_loadu_si128((const __m128i *)(x + i));
+		__m128i yv = _mm_loadu_si128((const __m128i *)(y + i));
 		sum = _mm_add_epi32(sum, _mm_madd_epi16(xv, yv));
 	}
-	_mm_storeu_si128((__m128i*)tmp, sum);
+	_mm_storeu_si128((__m128i *)tmp, sum);
 	acc = tmp[0] + tmp[1] + tmp[2] + tmp[3];
 	for (; i < m; ++i)
 		acc += (int32_t)x[i] * y[i];
@@ -196,7 +198,7 @@ static inline int16_t *psw_gen_base_freq_i16(void *km, int len, const psw_prof_t
 	int i, a;
 	int16_t *bf;
 
-	bf = (int16_t*)kmalloc(km, (size_t)len * sizeof(int16_t));
+	bf = (int16_t *)kmalloc(km, (size_t)len * sizeof(int16_t));
 	if (bf == 0) return 0;
 
 	for (i = 0; i < len; ++i) {
@@ -216,7 +218,7 @@ static inline int16_t *psw_gen_qp_i16(void *km, int qlen, const psw_prof_t *quer
 	int a, b, j;
 	int16_t *qp;
 
-	qp = (int16_t*)kmalloc(km, (size_t)qlen * m * sizeof(int16_t));
+	qp = (int16_t *)kmalloc(km, (size_t)qlen * m * sizeof(int16_t));
 	if (qp == 0) return 0;
 
 	for (j = 0; j < qlen; ++j) {
@@ -235,7 +237,7 @@ static inline int16_t *psw_gen_qp_i16(void *km, int qlen, const psw_prof_t *quer
 static inline int16_t *psw_gen_tf_i16(void *km, int tlen, const psw_prof_t *target, int8_t m)
 {
 	int i, b;
-	int16_t *tf = (int16_t*)kmalloc(km, (size_t)tlen * m * sizeof(int16_t));
+	int16_t *tf = (int16_t *)kmalloc(km, (size_t)tlen * m * sizeof(int16_t));
 	if (tf == 0) return 0;
 
 	for (i = 0; i < tlen; ++i) {
@@ -248,12 +250,12 @@ static inline int16_t *psw_gen_tf_i16(void *km, int tlen, const psw_prof_t *targ
 }
 
 static inline int16_t *psw_gen_tp_i16(void *km, int tlen, const psw_prof_t *target,
-                                      int8_t m, const int8_t *mat)
+																			int8_t m, const int8_t *mat)
 {
 	int a, b, i;
 	int16_t *tp;
 
-	tp = (int16_t*)kmalloc(km, (size_t)m * tlen * sizeof(int16_t));
+	tp = (int16_t *)kmalloc(km, (size_t)m * tlen * sizeof(int16_t));
 	if (tp == 0) return 0;
 
 	for (i = 0; i < tlen; ++i) {
@@ -306,18 +308,18 @@ static inline int psw_sse_state_init(void *km, int tlen, psw_sse_state_t *st)
 	size_t n_vec = (size_t)((tlen + 7) / 8);
 	uint8_t *mem;
 	if (st == 0) return 0;
-	mem = (uint8_t*)kcalloc(km, n_vec * 5 + 1, 16);
+	mem = (uint8_t *)kmalloc(km, (size_t)(n_vec * 5 + 1) * 16);
 	if (mem == 0) return 0;
 	st->mem = mem;
-	st->u = (__m128i*)(((size_t)mem + 15) >> 4 << 4);
+	st->u = (__m128i *)(((size_t)mem + 15) >> 4 << 4);
 	st->v = st->u + n_vec;
 	st->x = st->v + n_vec;
 	st->y = st->x + n_vec;
 	st->s = st->y + n_vec;
-	st->u16 = (int16_t*)st->u;
-	st->v16 = (int16_t*)st->v;
-	st->x16 = (int16_t*)st->x;
-	st->y16 = (int16_t*)st->y;
+	st->u16 = (int16_t *)st->u;
+	st->v16 = (int16_t *)st->v;
+	st->x16 = (int16_t *)st->x;
+	st->y16 = (int16_t *)st->y;
 	st->n_vec = (int)n_vec;
 	return 1;
 }
@@ -336,7 +338,7 @@ static inline void psw_store_flags8(uint8_t *dst, __m128i d)
 {
 	int16_t tmp[8];
 	int i;
-	_mm_storeu_si128((__m128i*)tmp, d);
+	_mm_storeu_si128((__m128i *)tmp, d);
 	for (i = 0; i < 8; ++i) dst[i] = (uint8_t)tmp[i];
 }
 
@@ -344,7 +346,7 @@ static inline void psw_store_flags8_band(uint8_t *dst, int tbase, int st0, int e
 {
 	int16_t tmp[8];
 	int i;
-	_mm_storeu_si128((__m128i*)tmp, d);
+	_mm_storeu_si128((__m128i *)tmp, d);
 	if (tbase >= st0 && tbase + 7 <= en0) {
 		uint8_t *p = dst + (tbase - st0);
 		for (i = 0; i < 8; ++i) p[i] = (uint8_t)tmp[i];
@@ -357,213 +359,212 @@ static inline void psw_store_flags8_band(uint8_t *dst, int tbase, int st0, int e
 	}
 }
 
-static inline __m128i psw_load_band_go_t(const int16_t *go_t, int tbase, int st0, int en0, int tlen)
+static inline __m128i psw_load_band_gapt(const int16_t *gap_t, int tbase, int st0, int en0, int tlen, int gap)
 {
-	if (tbase >= st0 && tbase + 7 <= en0 && tbase + 7 < tlen)
-		return _mm_loadu_si128((const __m128i*)(go_t + tbase));
+	if (tbase >= st0 && tbase + 7 <= en0)
+		return _mm_loadu_si128((const __m128i *)(gap_t + tbase));
 	else {
 		int16_t tmp[8];
 		int i;
 		for (i = 0; i < 8; ++i) {
 			int t = tbase + i;
-			tmp[i] = (t >= st0 && t <= en0 && t < tlen) ? go_t[t] : 0;
+			tmp[i] = (t >= st0 && t <= en0) ? gap_t[t] : gap;
 		}
-		return _mm_loadu_si128((const __m128i*)tmp);
+		return _mm_loadu_si128((const __m128i *)tmp);
 	}
 }
 
 // m-specific helpers for SSE hot loop, avoid per-lane m branching
 static inline void psw_fill_pp_score_block_m5(int16_t *dst, int tbase, int r, int st0, int en0,
-                                              int qlen, int tlen, int8_t scale_shift,
-                                              const int16_t *qp, const int16_t *tf,
-                                              const int16_t *go_ge_q, const int16_t *go_ge_t)
+																							int qlen, int tlen, int8_t scale_shift,
+																							const int16_t *qp, const int16_t *tf)
 {
-    int lane;
-    (void)qlen;
+	int lane;
+	(void)qlen;
 
-    if (tbase >= st0 && tbase + 7 <= en0 && tbase + 7 < tlen) {
-        int t = tbase;
-        int j = r - tbase;
-        const int16_t *qpj = qp + (size_t)j * 5;
-        const int16_t *tfi = tf + (size_t)t * 5;
-        for (lane = 0; lane < 8; ++lane, ++t, --j, qpj -= 5, tfi += 5)
-            dst[lane] = (int16_t)(psw_dot_scaled_sse_m5(qpj, tfi, scale_shift) + go_ge_t[t] + go_ge_q[j]);
-        return;
-    }
+	if (tbase >= st0 && tbase + 7 <= en0 && tbase + 7 < tlen) {
+		int t = tbase;
+		int j = r - tbase;
+		const int16_t *qpj = qp + (size_t)j * 5;
+		const int16_t *tfi = tf + (size_t)t * 5;
+		for (lane = 0; lane < 8; ++lane, ++t, --j, qpj -= 5, tfi += 5)
+			dst[lane] = (int16_t)(psw_dot_scaled_sse_m5(qpj, tfi, scale_shift));
+		return;
+	}
 
-    for (lane = 0; lane < 8; ++lane) {
-        int t = tbase + lane;
-        if (t >= st0 && t <= en0 && t < tlen) {
-            int j = r - t;
-            const int16_t *qpj = qp + (size_t)j * 5;
-            const int16_t *tfi = tf + (size_t)t * 5;
-            dst[lane] = (int16_t)(psw_dot_scaled_sse_m5(qpj, tfi, scale_shift) + go_ge_t[t] + go_ge_q[j]);
-        } else dst[lane] = 0;
-    }
+	for (lane = 0; lane < 8; ++lane) {
+		int t = tbase + lane;
+		if (t >= st0 && t <= en0 && t < tlen) {
+			int j = r - t;
+			const int16_t *qpj = qp + (size_t)j * 5;
+			const int16_t *tfi = tf + (size_t)t * 5;
+			dst[lane] = (int16_t)(psw_dot_scaled_sse_m5(qpj, tfi, scale_shift));
+		}
+		else dst[lane] = 0;
+	}
 }
 
 static inline void psw_fill_pp_score_block_m20(int16_t *dst, int tbase, int r, int st0, int en0,
-                                               int qlen, int tlen, int8_t scale_shift,
-                                               const int16_t *qp, const int16_t *tf,
-                                               const int16_t *go_ge_q, const int16_t *go_ge_t)
+																							 int qlen, int tlen, int8_t scale_shift,
+																							 const int16_t *qp, const int16_t *tf)
 {
-    int lane;
-    (void)qlen;
+	int lane;
+	(void)qlen;
 
-    if (tbase >= st0 && tbase + 7 <= en0 && tbase + 7 < tlen) {
-        int t = tbase;
-        int j = r - tbase;
-        const int16_t *qpj = qp + (size_t)j * 20;
-        const int16_t *tfi = tf + (size_t)t * 20;
-        for (lane = 0; lane < 8; ++lane, ++t, --j, qpj -= 20, tfi += 20)
-            dst[lane] = (int16_t)(psw_dot_scaled_sse_m20(qpj, tfi, scale_shift) + go_ge_t[t] + go_ge_q[j]);
-        return;
-    }
+	if (tbase >= st0 && tbase + 7 <= en0 && tbase + 7 < tlen) {
+		int t = tbase;
+		int j = r - tbase;
+		const int16_t *qpj = qp + (size_t)j * 20;
+		const int16_t *tfi = tf + (size_t)t * 20;
+		for (lane = 0; lane < 8; ++lane, ++t, --j, qpj -= 20, tfi += 20)
+			dst[lane] = (int16_t)(psw_dot_scaled_sse_m20(qpj, tfi, scale_shift));
+		return;
+	}
 
-    for (lane = 0; lane < 8; ++lane) {
-        int t = tbase + lane;
-        if (t >= st0 && t <= en0 && t < tlen) {
-            int j = r - t;
-            const int16_t *qpj = qp + (size_t)j * 20;
-            const int16_t *tfi = tf + (size_t)t * 20;
-            dst[lane] = (int16_t)(psw_dot_scaled_sse_m20(qpj, tfi, scale_shift) + go_ge_t[t] + go_ge_q[j]);
-        } else dst[lane] = 0;
-    }
+	for (lane = 0; lane < 8; ++lane) {
+		int t = tbase + lane;
+		if (t >= st0 && t <= en0 && t < tlen) {
+			int j = r - t;
+			const int16_t *qpj = qp + (size_t)j * 20;
+			const int16_t *tfi = tf + (size_t)t * 20;
+			dst[lane] = (int16_t)(psw_dot_scaled_sse_m20(qpj, tfi, scale_shift));
+		}
+		else dst[lane] = 0;
+	}
 }
 
 static inline void psw_fill_pp_score_block_m21(int16_t *dst, int tbase, int r, int st0, int en0,
-                                               int qlen, int tlen, int8_t scale_shift,
-                                               const int16_t *qp, const int16_t *tf,
-                                               const int16_t *go_ge_q, const int16_t *go_ge_t)
+																							 int qlen, int tlen, int8_t scale_shift,
+																							 const int16_t *qp, const int16_t *tf)
 {
-    int lane;
-    (void)qlen;
+	int lane;
+	(void)qlen;
 
-    if (tbase >= st0 && tbase + 7 <= en0 && tbase + 7 < tlen) {
-        int t = tbase;
-        int j = r - tbase;
-        const int16_t *qpj = qp + (size_t)j * 21;
-        const int16_t *tfi = tf + (size_t)t * 21;
-        for (lane = 0; lane < 8; ++lane, ++t, --j, qpj -= 21, tfi += 21)
-            dst[lane] = (int16_t)(psw_dot_scaled_sse_m21(qpj, tfi, scale_shift) + go_ge_t[t] + go_ge_q[j]);
-        return;
-    }
+	if (tbase >= st0 && tbase + 7 <= en0 && tbase + 7 < tlen) {
+		int t = tbase;
+		int j = r - tbase;
+		const int16_t *qpj = qp + (size_t)j * 21;
+		const int16_t *tfi = tf + (size_t)t * 21;
+		for (lane = 0; lane < 8; ++lane, ++t, --j, qpj -= 21, tfi += 21)
+			dst[lane] = (int16_t)(psw_dot_scaled_sse_m21(qpj, tfi, scale_shift));
+		return;
+	}
 
-    for (lane = 0; lane < 8; ++lane) {
-        int t = tbase + lane;
-        if (t >= st0 && t <= en0 && t < tlen) {
-            int j = r - t;
-            const int16_t *qpj = qp + (size_t)j * 21;
-            const int16_t *tfi = tf + (size_t)t * 21;
-            dst[lane] = (int16_t)(psw_dot_scaled_sse_m21(qpj, tfi, scale_shift) + go_ge_t[t] + go_ge_q[j]);
-        } else dst[lane] = 0;
-    }
+	for (lane = 0; lane < 8; ++lane) {
+		int t = tbase + lane;
+		if (t >= st0 && t <= en0 && t < tlen) {
+			int j = r - t;
+			const int16_t *qpj = qp + (size_t)j * 21;
+			const int16_t *tfi = tf + (size_t)t * 21;
+			dst[lane] = (int16_t)(psw_dot_scaled_sse_m21(qpj, tfi, scale_shift));
+		}
+		else dst[lane] = 0;
+	}
 }
 
 static inline void psw_fill_pp_score_block_generic(int16_t *dst, int tbase, int r, int st0, int en0,
-                                                   int qlen, int tlen, int m, int8_t scale_shift,
-                                                   const int16_t *qp, const int16_t *tf,
-                                                   const int16_t *go_ge_q, const int16_t *go_ge_t)
+																									 int qlen, int tlen, int m, int8_t scale_shift,
+																									 const int16_t *qp, const int16_t *tf)
 {
-    int lane;
-    (void)qlen;
+	int lane;
+	(void)qlen;
 
-    if (tbase >= st0 && tbase + 7 <= en0 && tbase + 7 < tlen) {
-        int t = tbase;
-        int j = r - tbase;
-        const int16_t *qpj = qp + (size_t)j * m;
-        const int16_t *tfi = tf + (size_t)t * m;
-        for (lane = 0; lane < 8; ++lane, ++t, --j, qpj -= m, tfi += m)
-            dst[lane] = (int16_t)(psw_dot_scaled_sse(qpj, tfi, m, scale_shift) + go_ge_t[t] + go_ge_q[j]);
-        return;
-    }
+	if (tbase >= st0 && tbase + 7 <= en0 && tbase + 7 < tlen) {
+		int t = tbase;
+		int j = r - tbase;
+		const int16_t *qpj = qp + (size_t)j * m;
+		const int16_t *tfi = tf + (size_t)t * m;
+		for (lane = 0; lane < 8; ++lane, ++t, --j, qpj -= m, tfi += m)
+			dst[lane] = (int16_t)(psw_dot_scaled_sse(qpj, tfi, m, scale_shift));
+		return;
+	}
 
-    for (lane = 0; lane < 8; ++lane) {
-        int t = tbase + lane;
-        if (t >= st0 && t <= en0 && t < tlen) {
-            int j = r - t;
-            const int16_t *qpj = qp + (size_t)j * m;
-            const int16_t *tfi = tf + (size_t)t * m;
-            dst[lane] = (int16_t)(psw_dot_scaled_sse(qpj, tfi, m, scale_shift) + go_ge_t[t] + go_ge_q[j]);
-        } else dst[lane] = 0;
-    }
+	for (lane = 0; lane < 8; ++lane) {
+		int t = tbase + lane;
+		if (t >= st0 && t <= en0 && t < tlen) {
+			int j = r - t;
+			const int16_t *qpj = qp + (size_t)j * m;
+			const int16_t *tfi = tf + (size_t)t * m;
+			dst[lane] = (int16_t)(psw_dot_scaled_sse(qpj, tfi, m, scale_shift));
+		}
+		else dst[lane] = 0;
+	}
 }
 
 static inline void psw_fill_pp_score_block(int16_t *dst, int tbase, int r, int st0, int en0,
-                                           int qlen, int tlen, int m, int8_t scale_shift,
-                                           const int16_t *qp, const int16_t *tf,
-                                           const int16_t *go_ge_q, const int16_t *go_ge_t)
+																					 int qlen, int tlen, int m, int8_t scale_shift,
+																					 const int16_t *qp, const int16_t *tf)
 {
-    if (m == 20) {
-        psw_fill_pp_score_block_m20(dst, tbase, r, st0, en0, qlen, tlen, scale_shift, qp, tf, go_ge_q, go_ge_t);
-        return;
-    }
-    if (m == 21) {
-        psw_fill_pp_score_block_m21(dst, tbase, r, st0, en0, qlen, tlen, scale_shift, qp, tf, go_ge_q, go_ge_t);
-        return;
-    }
-    if (m == 5) {
-        psw_fill_pp_score_block_m5(dst, tbase, r, st0, en0, qlen, tlen, scale_shift, qp, tf, go_ge_q, go_ge_t);
-        return;
-    }
-    psw_fill_pp_score_block_generic(dst, tbase, r, st0, en0, qlen, tlen, m, scale_shift, qp, tf, go_ge_q, go_ge_t);
+	if (m == 20) {
+		psw_fill_pp_score_block_m20(dst, tbase, r, st0, en0, qlen, tlen, scale_shift, qp, tf);
+		return;
+	}
+	if (m == 21) {
+		psw_fill_pp_score_block_m21(dst, tbase, r, st0, en0, qlen, tlen, scale_shift, qp, tf);
+		return;
+	}
+	if (m == 5) {
+		psw_fill_pp_score_block_m5(dst, tbase, r, st0, en0, qlen, tlen, scale_shift, qp, tf);
+		return;
+	}
+	psw_fill_pp_score_block_generic(dst, tbase, r, st0, en0, qlen, tlen, m, scale_shift, qp, tf);
 }
 
 static inline void psw_fill_ps_score_block(int16_t *dst, int tbase, int r, int st0, int en0,
-                                           int qlen, int tlen, const uint8_t *query,
-                                           const int16_t *tp, int16_t go_q, int16_t ge_q,
-                                           const int16_t *go_t, const int16_t *ge_t)
+																					 int qlen, int tlen, const uint8_t *query,
+																					 const int16_t *tp)
 {
-    int lane;
-    const int16_t go_qe = (int16_t)(go_q + ge_q);
-    (void)qlen;
+	int lane;
+	(void)qlen;
 
-    if (tbase >= st0 && tbase + 7 <= en0 && tbase + 7 < tlen) {
-        int t = tbase;
-        int j = r - tbase;
-        for (lane = 0; lane < 8; ++lane, ++t, --j) {
-            int aidx = (int)query[j];
-            dst[lane] = (int16_t)(tp[(size_t)aidx * tlen + t] + go_t[t] + ge_t[t] + go_qe);
-        }
-        return;
-    }
+	if (tbase >= st0 && tbase + 7 <= en0 && tbase + 7 < tlen) {
+		int t = tbase;
+		int j = r - tbase;
+		for (lane = 0; lane < 8; ++lane, ++t, --j) {
+			int aidx = (int)query[j];
+			dst[lane] = (int16_t)(tp[(size_t)aidx * tlen + t] );
+		}
+		return;
+	}
 
-    for (lane = 0; lane < 8; ++lane) {
-        int t = tbase + lane;
-        if (t >= st0 && t <= en0 && t < tlen) {
-            int j = r - t;
-            int aidx = (int)query[j];
-            dst[lane] = (int16_t)(tp[(size_t)aidx * tlen + t] + go_t[t] + ge_t[t] + go_qe);
-        } else dst[lane] = 0;
-    }
+	for (lane = 0; lane < 8; ++lane) {
+		int t = tbase + lane;
+		if (t >= st0 && t <= en0 && t < tlen) {
+			int j = r - t;
+			int aidx = (int)query[j];
+			dst[lane] = (int16_t)(tp[(size_t)aidx * tlen + t]);
+		}
+		else dst[lane] = 0;
+	}
 }
 
 static inline void psw_fill_rev_qgap_block(int16_t *dst, int tbase, int r, int st0, int en0,
-                                           int qlen, const int16_t *go_q)
+																					 int qlen, const int16_t *gap_t, int16_t gap, int j_offset)
 {
-    int lane;
-    (void)qlen;
-    if (tbase >= st0 && tbase + 7 <= en0) {
-        const int16_t *g = go_q + (r - tbase);
-        for (lane = 0; lane < 8; ++lane) dst[lane] = g[-lane];
-        return;
-    }
-    for (lane = 0; lane < 8; ++lane) {
-        int t = tbase + lane;
-        if (t >= st0 && t <= en0) {
-            int j = r - t;
-            dst[lane] = go_q[j];
-        } else dst[lane] = 0;
-    }
+	int lane;
+	(void)qlen;
+	if (tbase >= st0 && tbase + 7 <= en0) {
+		const int16_t *g = gap_t + (r - tbase) + j_offset; // 必须加上 j_offset
+		for (lane = 0; lane < 8; ++lane) dst[lane] = g[-lane];
+		return;
+	}
+	for (lane = 0; lane < 8; ++lane) {
+		int t = tbase + lane;
+		if (t >= st0 && t <= en0) {
+			int j_lane = r - t + j_offset; // 每个 lane 必须有自己独立的 j
+			dst[lane] = gap_t[j_lane];
+		}
+		else dst[lane] = gap;
+	}
 }
 
 static inline void psw_sse_core_pp(int r, int st0, int en0, int st, int en,
-                                   psw_sse_state_t *sv, uint8_t *zr,
-                                   const int16_t *go_t, const int16_t *go_q,
-                                   int qlen, int tlen, int m, int8_t scale_shift,
-                                   const int16_t *qp, const int16_t *tf,
-                                   const int16_t *go_ge_q, const int16_t *go_ge_t,
-                                   int16_t x1, int16_t v1)
+																	 psw_sse_state_t *sv, uint8_t *zr,
+																	 const int16_t *go_t, const int16_t *go_q,
+																	 int qlen, int tlen, int m, int8_t scale_shift,
+																	 const int16_t *qp, const int16_t *tf,
+																	 const int16_t *go_ge_q, const int16_t *go_ge_t,
+																	 int16_t x1, int16_t v1, int16_t igapo, int16_t igape)
 {
 	int t;
 	const __m128i zero_ = _mm_setzero_si128();
@@ -573,16 +574,21 @@ static inline void psw_sse_core_pp(int r, int st0, int en0, int st, int en,
 	const __m128i flag16_ = _mm_set1_epi16(0x10);
 	__m128i x1_ = psw_set_low_i16(x1);
 	__m128i v1_ = psw_set_low_i16(v1);
-	int16_t score0[8], topen[8];
+	alignas(16) int16_t score0[8], qopen[8], qopen_ext[8];
 
 	if (zr) {
 		for (t = st; t <= en; t += 8) {
-			__m128i z, a, b, xt1, vt1, ut, yt, tmp, qopen_, topen_, d;
-			psw_fill_pp_score_block(score0, t, r, st0, en0, qlen, tlen, m, scale_shift, qp, tf, go_ge_q, go_ge_t);
-			qopen_ = psw_load_band_go_t(go_t, t, st0, en0, tlen);
-			psw_fill_rev_qgap_block(topen, t, r, st0, en0, qlen, go_q);
-			z = _mm_loadu_si128((const __m128i*)score0);
-			topen_ = _mm_loadu_si128((const __m128i*)topen);
+			__m128i z, a, b, xt1, vt1, ut, yt, tmp, topen_, topen_ext_, qopen_, qopen_ext_, d;
+			psw_fill_pp_score_block(score0, t, r, st0, en0, qlen, tlen, m, scale_shift, qp, tf);
+
+			topen_ = psw_load_band_gapt(go_t + 1, t, st0, en0, tlen, igapo);	// t + 1
+			topen_ext_ = psw_load_band_gapt(go_ge_t + 1, t, st0, en0, tlen, igapo + igape);
+
+			psw_fill_rev_qgap_block(qopen, t, r, st0, en0, qlen, go_q, igapo, 1);	// j + 1
+			psw_fill_rev_qgap_block(qopen_ext, t, r, st0, en0, qlen, go_ge_q, igapo + igape, 1);
+			z = _mm_load_si128((const __m128i *)score0);
+			qopen_ = _mm_load_si128((const __m128i *)qopen);
+			qopen_ext_ = _mm_load_si128((const __m128i *)qopen_ext);
 
 			xt1 = _mm_load_si128(&sv->x[t >> 3]);
 			tmp = _mm_srli_si128(xt1, 14);
@@ -607,22 +613,30 @@ static inline void psw_sse_core_pp(int r, int st0, int en0, int st, int en,
 			_mm_store_si128(&sv->u[t >> 3], _mm_sub_epi16(z, vt1));
 			_mm_store_si128(&sv->v[t >> 3], _mm_sub_epi16(z, ut));
 
-			tmp = _mm_add_epi16(_mm_sub_epi16(a, z), qopen_);
+			tmp = _mm_add_epi16(_mm_sub_epi16(a, z), topen_);
 			d = _mm_or_si128(d, _mm_and_si128(flag8_, _mm_cmpgt_epi16(tmp, zero_)));
-			_mm_store_si128(&sv->x[t >> 3], _mm_max_epi16(tmp, zero_));
-			tmp = _mm_add_epi16(_mm_sub_epi16(b, z), topen_);
+			_mm_store_si128(&sv->x[t >> 3], _mm_sub_epi16(_mm_max_epi16(tmp, zero_), topen_ext_));
+
+			tmp = _mm_add_epi16(_mm_sub_epi16(b, z), qopen_);
 			d = _mm_or_si128(d, _mm_and_si128(flag16_, _mm_cmpgt_epi16(tmp, zero_)));
-			_mm_store_si128(&sv->y[t >> 3], _mm_max_epi16(tmp, zero_));
+			_mm_store_si128(&sv->y[t >> 3], _mm_sub_epi16(_mm_max_epi16(tmp, zero_), qopen_ext_));
 			psw_store_flags8_band(zr, t, st0, en0, d);
 		}
-	} else {
+	}
+	else {
 		for (t = st; t <= en; t += 8) {
-			__m128i z, a, b, xt1, vt1, ut, yt, tmp, qopen_, topen_;
-			psw_fill_pp_score_block(score0, t, r, st0, en0, qlen, tlen, m, scale_shift, qp, tf, go_ge_q, go_ge_t);
-			qopen_ = psw_load_band_go_t(go_t, t, st0, en0, tlen);
-			psw_fill_rev_qgap_block(topen, t, r, st0, en0, qlen, go_q);
-			z = _mm_loadu_si128((const __m128i*)score0);
-			topen_ = _mm_loadu_si128((const __m128i*)topen);
+			__m128i z, a, b, xt1, vt1, ut, yt, tmp, qopen_, qopen_ext_, topen_, topen_ext_;
+			psw_fill_pp_score_block(score0, t, r, st0, en0, qlen, tlen, m, scale_shift, qp, tf);
+
+			topen_ = psw_load_band_gapt(go_t + 1, t, st0, en0, tlen, igapo);
+			topen_ext_ = psw_load_band_gapt(go_ge_t + 1, t, st0, en0, tlen, igapo + igape);
+
+			psw_fill_rev_qgap_block(qopen, t, r, st0, en0, qlen, go_q, igapo, 1);
+			psw_fill_rev_qgap_block(qopen_ext, t, r, st0, en0, qlen, go_ge_q, igapo + igape, 1);
+
+			z = _mm_load_si128((const __m128i *)score0);
+			qopen_ = _mm_load_si128((const __m128i *)qopen);
+			qopen_ext_ = _mm_load_si128((const __m128i *)qopen_ext);
 
 			xt1 = _mm_load_si128(&sv->x[t >> 3]);
 			tmp = _mm_srli_si128(xt1, 14);
@@ -642,21 +656,21 @@ static inline void psw_sse_core_pp(int r, int st0, int en0, int st, int en,
 			z = _mm_max_epi16(z, b);
 			_mm_store_si128(&sv->u[t >> 3], _mm_sub_epi16(z, vt1));
 			_mm_store_si128(&sv->v[t >> 3], _mm_sub_epi16(z, ut));
-			tmp = _mm_add_epi16(_mm_sub_epi16(a, z), qopen_);
-			_mm_store_si128(&sv->x[t >> 3], _mm_max_epi16(tmp, zero_));
-			tmp = _mm_add_epi16(_mm_sub_epi16(b, z), topen_);
-			_mm_store_si128(&sv->y[t >> 3], _mm_max_epi16(tmp, zero_));
+			tmp = _mm_add_epi16(_mm_sub_epi16(a, z), topen_);
+			_mm_store_si128(&sv->x[t >> 3], _mm_sub_epi16(_mm_max_epi16(tmp, zero_), topen_ext_));
+			tmp = _mm_add_epi16(_mm_sub_epi16(b, z), qopen_);
+			_mm_store_si128(&sv->y[t >> 3], _mm_sub_epi16(_mm_max_epi16(tmp, zero_), qopen_ext_));
 		}
 	}
 }
 
 static inline void psw_sse_core_ps(int r, int st0, int en0, int st, int en,
-                                   psw_sse_state_t *sv, uint8_t *zr,
-                                   int16_t go_q, int16_t ge_q,
-                                   const int16_t *go_t, const int16_t *ge_t,
-                                   int qlen, int tlen, const uint8_t *query,
-                                   const int16_t *tp,
-                                   int16_t x1, int16_t v1)
+																	 psw_sse_state_t *sv, uint8_t *zr,
+																	 int16_t go_q, int16_t ge_q,
+																	 const int16_t *go_t, const int16_t *go_ge_t,
+																	 int qlen, int tlen, const uint8_t *query,
+																	 const int16_t *tp,
+																	 int16_t x1, int16_t v1)
 {
 	int t;
 	const __m128i zero_ = _mm_setzero_si128();
@@ -664,17 +678,19 @@ static inline void psw_sse_core_ps(int r, int st0, int en0, int st, int en,
 	const __m128i flag2_ = _mm_set1_epi16(2);
 	const __m128i flag8_ = _mm_set1_epi16(0x08);
 	const __m128i flag16_ = _mm_set1_epi16(0x10);
-	const __m128i topen_const_ = _mm_set1_epi16(go_q);
+	const __m128i qopen_ = _mm_set1_epi16(go_q);
+	const __m128i qopen_ext_ = _mm_set1_epi16(go_q + ge_q);
 	__m128i x1_ = psw_set_low_i16(x1);
 	__m128i v1_ = psw_set_low_i16(v1);
-	int16_t score0[8];
+	alignas(16) int16_t score0[8];
 
 	if (zr) {
 		for (t = st; t <= en; t += 8) {
-			__m128i z, a, b, xt1, vt1, ut, yt, tmp, qopen_, d;
-			psw_fill_ps_score_block(score0, t, r, st0, en0, qlen, tlen, query, tp, go_q, ge_q, go_t, ge_t);
-			qopen_ = psw_load_band_go_t(go_t, t, st0, en0, tlen);
-			z = _mm_loadu_si128((const __m128i*)score0);
+			__m128i z, a, b, xt1, vt1, ut, yt, tmp, topen_, topen_ext_, d;
+			psw_fill_ps_score_block(score0, t, r, st0, en0, qlen, tlen, query, tp);
+			topen_ = psw_load_band_gapt(go_t + 1, t, st0, en0, tlen, go_q);
+			topen_ext_ = psw_load_band_gapt(go_ge_t + 1, t, st0, en0, tlen, go_q + ge_q);
+			z = _mm_load_si128((const __m128i *)score0);
 
 			xt1 = _mm_load_si128(&sv->x[t >> 3]);
 			tmp = _mm_srli_si128(xt1, 14);
@@ -699,20 +715,23 @@ static inline void psw_sse_core_ps(int r, int st0, int en0, int st, int en,
 			_mm_store_si128(&sv->u[t >> 3], _mm_sub_epi16(z, vt1));
 			_mm_store_si128(&sv->v[t >> 3], _mm_sub_epi16(z, ut));
 
-			tmp = _mm_add_epi16(_mm_sub_epi16(a, z), qopen_);
+			tmp = _mm_add_epi16(_mm_sub_epi16(a, z), topen_);
 			d = _mm_or_si128(d, _mm_and_si128(flag8_, _mm_cmpgt_epi16(tmp, zero_)));
-			_mm_store_si128(&sv->x[t >> 3], _mm_max_epi16(tmp, zero_));
-			tmp = _mm_add_epi16(_mm_sub_epi16(b, z), topen_const_);
+			_mm_store_si128(&sv->x[t >> 3], _mm_sub_epi16(_mm_max_epi16(tmp, zero_), topen_ext_));
+
+			tmp = _mm_add_epi16(_mm_sub_epi16(b, z), qopen_);
 			d = _mm_or_si128(d, _mm_and_si128(flag16_, _mm_cmpgt_epi16(tmp, zero_)));
-			_mm_store_si128(&sv->y[t >> 3], _mm_max_epi16(tmp, zero_));
+			_mm_store_si128(&sv->y[t >> 3], _mm_sub_epi16(_mm_max_epi16(tmp, zero_), qopen_ext_));
 			psw_store_flags8_band(zr, t, st0, en0, d);
 		}
-	} else {
+	}
+	else {
 		for (t = st; t <= en; t += 8) {
-			__m128i z, a, b, xt1, vt1, ut, yt, tmp, qopen_, topen_;
-			psw_fill_ps_score_block(score0, t, r, st0, en0, qlen, tlen, query, tp, go_q, ge_q, go_t, ge_t);
-			qopen_ = psw_load_band_go_t(go_t, t, st0, en0, tlen);
-			z = _mm_loadu_si128((const __m128i*)score0);
+			__m128i z, a, b, xt1, vt1, ut, yt, tmp, topen_, topen_ext_;
+			psw_fill_ps_score_block(score0, t, r, st0, en0, qlen, tlen, query, tp);
+			topen_ = psw_load_band_gapt(go_t + 1, t, st0, en0, tlen, go_q);
+			topen_ext_ = psw_load_band_gapt(go_ge_t + 1, t, st0, en0, tlen, go_q + ge_q);
+			z = _mm_load_si128((const __m128i *)score0);
 
 			xt1 = _mm_load_si128(&sv->x[t >> 3]);
 			tmp = _mm_srli_si128(xt1, 14);
@@ -732,23 +751,24 @@ static inline void psw_sse_core_ps(int r, int st0, int en0, int st, int en,
 			z = _mm_max_epi16(z, b);
 			_mm_store_si128(&sv->u[t >> 3], _mm_sub_epi16(z, vt1));
 			_mm_store_si128(&sv->v[t >> 3], _mm_sub_epi16(z, ut));
-			tmp = _mm_add_epi16(_mm_sub_epi16(a, z), qopen_);
-			_mm_store_si128(&sv->x[t >> 3], _mm_max_epi16(tmp, zero_));
-			tmp = _mm_add_epi16(_mm_sub_epi16(b, z), topen_const_);
-			_mm_store_si128(&sv->y[t >> 3], _mm_max_epi16(tmp, zero_));
+			tmp = _mm_add_epi16(_mm_sub_epi16(a, z), topen_);
+			_mm_store_si128(&sv->x[t >> 3], _mm_sub_epi16(_mm_max_epi16(tmp, zero_), topen_ext_));
+
+			tmp = _mm_add_epi16(_mm_sub_epi16(b, z), qopen_);
+			_mm_store_si128(&sv->y[t >> 3], _mm_sub_epi16(_mm_max_epi16(tmp, zero_), qopen_ext_));
 		}
 	}
 }
 
 float psw_gg3_sse_pp(void *km, int qlen, const psw_prof_t *query,
-                     int tlen, const psw_prof_t *target,
-                     int8_t m, const int8_t *mat,
-                     int8_t gapo, int8_t gape, int w,
-                     int *m_cigar_, int *n_cigar_, uint32_t **cigar_)
+										 int tlen, const psw_prof_t *target,
+										 int8_t m, const int8_t *mat,
+										 int8_t gapo, int8_t gape, int w,
+										 int *m_cigar_, int *n_cigar_, uint32_t **cigar_)
 {
 	int16_t *qp = 0, *tf = 0, *qbf = 0, *tbf = 0;
 	int16_t *go_q = 0, *ge_q = 0, *go_t = 0, *ge_t = 0, *go_ge_q = 0, *go_ge_t = 0;
-	psw_prof_t query_n = {0, 0, 0, 0}, target_n = {0, 0, 0, 0};
+	psw_prof_t query_n = { 0, 0, 0, 0 }, target_n = { 0, 0, 0, 0 };
 	const psw_prof_t *q_use, *t_use;
 	int32_t r, n_col, *off = 0;
 	int32_t score32 = INT32_MIN;
@@ -756,10 +776,11 @@ float psw_gg3_sse_pp(void *km, int qlen, const psw_prof_t *query,
 	uint8_t *z = 0;
 	int16_t scale;
 	int8_t scale_shift;
-	psw_sse_state_t sv = {0};
+	int16_t igapo, igape;
+	psw_sse_state_t sv = { 0 };
 	int ok = 0;
 	int failed = 0;
-
+	int16_t neg_inf;
 	if (gapo < 0 || gape < 0) return PSW_NEG_INF_F;
 	if (query == 0 || target == 0 || mat == 0) return PSW_NEG_INF_F;
 	if (query->prof == 0 || target->prof == 0) return PSW_NEG_INF_F;
@@ -791,36 +812,50 @@ float psw_gg3_sse_pp(void *km, int qlen, const psw_prof_t *query,
 		tbf = psw_gen_base_freq_i16(km, tlen, t_use, m, scale);
 		if (tbf == 0) { failed = 1; break; }
 
-		go_q = (int16_t*)kmalloc(km, (size_t)qlen * sizeof(int16_t));
-		ge_q = (int16_t*)kmalloc(km, (size_t)qlen * sizeof(int16_t));
-		go_t = (int16_t*)kmalloc(km, (size_t)tlen * sizeof(int16_t));
-		ge_t = (int16_t*)kmalloc(km, (size_t)tlen * sizeof(int16_t));
-		go_ge_q = (int16_t*)kmalloc(km, (size_t)qlen * sizeof(int16_t));
-		go_ge_t = (int16_t*)kmalloc(km, (size_t)tlen * sizeof(int16_t));
+		go_q = (int16_t *)kmalloc(km, (size_t)(qlen + 1) * sizeof(int16_t));
+		ge_q = (int16_t *)kmalloc(km, (size_t)(qlen + 1) * sizeof(int16_t));
+		go_t = (int16_t *)kmalloc(km, (size_t)(tlen + 1) * sizeof(int16_t));
+		ge_t = (int16_t *)kmalloc(km, (size_t)(tlen + 1) * sizeof(int16_t));
+		go_ge_q = (int16_t *)kmalloc(km, (size_t)(qlen + 1) * sizeof(int16_t));
+		go_ge_t = (int16_t *)kmalloc(km, (size_t)(tlen + 1) * sizeof(int16_t));
 		if (go_q == 0 || ge_q == 0 || go_t == 0 || ge_t == 0 || go_ge_q == 0 || go_ge_t == 0) { failed = 1; break; }
+		igapo = psw_sat16((int32_t)gapo * scale);
+		igape = psw_sat16((int32_t)gape * scale);
 		for (r = 0; r < qlen; ++r) {
 			go_q[r] = psw_sat16((int32_t)gapo * qbf[r]);
 			ge_q[r] = psw_sat16((int32_t)gape * qbf[r]);
 			go_ge_q[r] = (int16_t)(go_q[r] + ge_q[r]);
 		}
+		go_q[qlen] = igapo, ge_q[qlen] = igape, go_ge_q[qlen] = igapo + igape;
 		for (r = 0; r < tlen; ++r) {
 			go_t[r] = psw_sat16((int32_t)gapo * tbf[r]);
 			ge_t[r] = psw_sat16((int32_t)gape * tbf[r]);
 			go_ge_t[r] = (int16_t)(go_t[r] + ge_t[r]);
 		}
+		go_t[tlen] = igapo, ge_t[tlen] = igape, go_ge_t[tlen] = igapo + igape;
+
 		if (!psw_sse_state_init(km, tlen, &sv)) { failed = 1; break; }
 		ok = 1;
 
+		neg_inf = -(igapo + igape);
+		__m128i neg_inf_ = _mm_set1_epi16(neg_inf);
+		for (int i = 0; i < sv.n_vec; ++i) {
+			_mm_store_si128(&sv.x[i], neg_inf_);
+			_mm_store_si128(&sv.v[i], neg_inf_);
+			_mm_store_si128(&sv.y[i], neg_inf_);
+			_mm_store_si128(&sv.u[i], neg_inf_);
+		}
+
 		if (m_cigar_ && n_cigar_ && cigar_) {
 			*n_cigar_ = 0;
-			z = (uint8_t*)kcalloc(km, (size_t)(qlen + tlen) * n_col, 1);
-			off = (int32_t*)kmalloc(km, (size_t)(qlen + tlen) * sizeof(int32_t));
+			z = (uint8_t *)kcalloc(km, (size_t)(qlen + tlen) * n_col, 1);
+			off = (int32_t *)kmalloc(km, (size_t)(qlen + tlen) * sizeof(int32_t));
 			if (z == 0 || off == 0) { failed = 1; break; }
 		}
 
 		if (qlen == 0 || tlen == 0) {
 			int32_t s32 = qlen == 0 ? psw_gap_only_target_i16(go_t, ge_t, tlen)
-			                       : psw_gap_only_query_i16(go_q, ge_q, qlen);
+				: psw_gap_only_query_i16(go_q, ge_q, qlen);
 			score32 = s32;
 			if (m_cigar_ && n_cigar_ && cigar_) {
 				*n_cigar_ = 0;
@@ -845,35 +880,39 @@ float psw_gg3_sse_pp(void *km, int qlen, const psw_prof_t *query,
 			en = ((en + 8) / 8) * 8 - 1;
 
 			if (st0 != 0) {
-				if (r > st0 + st0 + w - 1) x1 = v1 = 0;
+				if (r > st0 + st0 + w - 1) x1 = v1 = neg_inf;
 				else {
 					x1 = sv.x16[st0 - 1];
 					v1 = sv.v16[st0 - 1];
 				}
-			} else {
-				x1 = 0;
-				v1 = r ? go_q[r - 1] : 0;
+			}
+			else {
+				x1 = -go_t[0] - ge_t[0];
+				v1 = r ? -ge_q[r - 0] : -go_q[r - 0] - ge_q[r - 0];
 			}
 			if (en0 != r) {
-				if (r < en0 + en0 - w - 1) sv.y16[en0] = sv.u16[en0] = 0;
-			} else {
-				sv.y16[r] = 0;
-				sv.u16[r] = r ? go_t[r - 1] : 0;
+				if (r < en0 + en0 - w - 1) sv.y16[en0] = sv.u16[en0] = neg_inf;
+			}
+			else {
+				sv.y16[r] = -go_q[0] - ge_q[0];
+				sv.u16[r] = r ? -ge_t[r] : -go_t[r] - ge_t[r];
 			}
 			if (z) off[r] = st0;
 			psw_sse_core_pp((int)r, (int)st0, (int)en0, (int)st, (int)en, &sv, z ? z + (size_t)r * n_col : 0,
-			                go_t, go_q, qlen, tlen, m, scale_shift, qp, tf, go_ge_q, go_ge_t, x1, v1);
+											go_t, go_q, qlen, tlen, m, scale_shift, qp, tf, go_ge_q, go_ge_t, x1, v1, igapo, igape);
 
 			if (r > 0) {
 				if (last_H0_t >= st0 && last_H0_t <= en0) {
 					int32_t jh = r - last_H0_t;
-					H0 += (int32_t)sv.v16[last_H0_t] - go_ge_q[jh];
-				} else {
-					++last_H0_t;
-					H0 += (int32_t)sv.u16[last_H0_t] - go_ge_t[last_H0_t];
+					H0 += sv.v16[last_H0_t];
 				}
-			} else {
-				H0 = (int32_t)sv.v16[0] - ((int32_t)go_ge_t[0] + go_ge_q[0]);
+				else {
+					++last_H0_t;
+					H0 += sv.u16[last_H0_t];
+				}
+			}
+			else {
+				H0 = sv.v16[0] - (go_t[0] + ge_t[0]);
 				last_H0_t = 0;
 			}
 		}
@@ -903,13 +942,13 @@ float psw_gg3_sse_pp(void *km, int qlen, const psw_prof_t *query,
 }
 
 float psw_gg3_sse_ps(void *km, int qlen, const uint8_t *query,
-                     int tlen, const psw_prof_t *target,
-                     int8_t m, const int8_t *mat,
-                     int8_t gapo, int8_t gape, int w,
-                     int *m_cigar_, int *n_cigar_, uint32_t **cigar_)
+										 int tlen, const psw_prof_t *target,
+										 int8_t m, const int8_t *mat,
+										 int8_t gapo, int8_t gape, int w,
+										 int *m_cigar_, int *n_cigar_, uint32_t **cigar_)
 {
-	int16_t *tp = 0, *tbf = 0, *go_t = 0, *ge_t = 0;
-	psw_prof_t target_n = {0, 0, 0, 0};
+	int16_t *tp = 0, *tbf = 0, *go_t = 0, *ge_t = 0, *go_ge_t = 0;
+	psw_prof_t target_n = { 0, 0, 0, 0 };
 	const psw_prof_t *t_use;
 	int32_t r, n_col, *off = 0;
 	int32_t score32 = INT32_MIN;
@@ -917,7 +956,8 @@ float psw_gg3_sse_ps(void *km, int qlen, const uint8_t *query,
 	uint8_t *z = 0;
 	int16_t scale, go_q, ge_q;
 	int8_t scale_shift;
-	psw_sse_state_t sv = {0};
+	int16_t igapo, igape;
+	psw_sse_state_t sv = { 0 };
 	int ok = 0;
 	int failed = 0;
 
@@ -946,26 +986,40 @@ float psw_gg3_sse_ps(void *km, int qlen, const uint8_t *query,
 		if (tp == 0) { failed = 1; break; }
 		tbf = psw_gen_base_freq_i16(km, tlen, t_use, m, scale);
 		if (tbf == 0) { failed = 1; break; }
-		go_t = (int16_t*)kmalloc(km, (size_t)tlen * sizeof(int16_t));
-		ge_t = (int16_t*)kmalloc(km, (size_t)tlen * sizeof(int16_t));
-		if (go_t == 0 || ge_t == 0) { failed = 1; break; }
+		go_t = (int16_t *)kmalloc(km, (size_t)(tlen + 1) * sizeof(int16_t));
+		ge_t = (int16_t *)kmalloc(km, (size_t)(tlen + 1) * sizeof(int16_t));
+		go_ge_t = (int16_t *)kmalloc(km, (size_t)(tlen + 1) * sizeof(int16_t));
+		if (go_t == 0 || ge_t == 0 || go_ge_t == 0) { failed = 1; break; }
+		igapo = psw_sat16((int32_t)gapo * scale);
+		igape = psw_sat16((int32_t)gape * scale);
 		for (r = 0; r < tlen; ++r) {
 			go_t[r] = psw_sat16((int32_t)gapo * tbf[r]);
 			ge_t[r] = psw_sat16((int32_t)gape * tbf[r]);
+			go_ge_t[r] = psw_sat16((int32_t)(go_t[r] + ge_t[r]));
 		}
+		go_t[tlen] = igapo, ge_t[tlen] = igape, go_ge_t[tlen] = igapo + igape;
 		if (!psw_sse_state_init(km, tlen, &sv)) { failed = 1; break; }
 		ok = 1;
 
+		int16_t neg_inf = -(igapo + igape);
+		__m128i neg_inf_ = _mm_set1_epi16(neg_inf);
+		for (int i = 0; i < sv.n_vec; ++i) {
+			_mm_store_si128(&sv.x[i], neg_inf_);
+			_mm_store_si128(&sv.v[i], neg_inf_);
+			_mm_store_si128(&sv.y[i], neg_inf_);
+			_mm_store_si128(&sv.u[i], neg_inf_);
+		}
+
 		if (m_cigar_ && n_cigar_ && cigar_) {
 			*n_cigar_ = 0;
-			z = (uint8_t*)kcalloc(km, (size_t)(qlen + tlen) * n_col, 1);
-			off = (int32_t*)kmalloc(km, (size_t)(qlen + tlen) * sizeof(int32_t));
+			z = (uint8_t *)kcalloc(km, (size_t)(qlen + tlen) * n_col, 1);
+			off = (int32_t *)kmalloc(km, (size_t)(qlen + tlen) * sizeof(int32_t));
 			if (z == 0 || off == 0) { failed = 1; break; }
 		}
 
 		if (qlen == 0 || tlen == 0) {
 			int32_t s32 = qlen == 0 ? psw_gap_only_target_i16(go_t, ge_t, tlen)
-			                       : psw_gap_only_query_scalar_i16(go_q, ge_q, qlen);
+				: psw_gap_only_query_scalar_i16(go_q, ge_q, qlen);
 			score32 = s32;
 			if (m_cigar_ && n_cigar_ && cigar_) {
 				*n_cigar_ = 0;
@@ -990,34 +1044,37 @@ float psw_gg3_sse_ps(void *km, int qlen, const uint8_t *query,
 			en = ((en + 8) / 8) * 8 - 1;
 
 			if (st0 != 0) {
-				if (r > st0 + st0 + w - 1) x1 = v1 = 0;
+				if (r > st0 + st0 + w - 1) x1 = v1 = neg_inf;
 				else {
 					x1 = sv.x16[st0 - 1];
 					v1 = sv.v16[st0 - 1];
 				}
-			} else {
-				x1 = 0;
-				v1 = r ? go_q : 0;
+			}
+			else {
+				x1 = -go_t[0] - ge_t[0];
+				v1 = r ? -ge_q : -go_q - ge_q;
 			}
 			if (en0 != r) {
-				if (r < en0 + en0 - w - 1) sv.y16[en0] = sv.u16[en0] = 0;
-			} else {
-				sv.y16[r] = 0;
-				sv.u16[r] = r ? go_t[r - 1] : 0;
+				if (r < en0 + en0 - w - 1) sv.y16[en0] = sv.u16[en0] = neg_inf;
+			}
+			else {
+				sv.y16[r] = -go_q - ge_q;
+				sv.u16[r] = r ? -ge_t[r] : -go_t[r] - ge_t[r];
 			}
 			if (z) off[r] = st0;
 			psw_sse_core_ps((int)r, (int)st0, (int)en0, (int)st, (int)en, &sv, z ? z + (size_t)r * n_col : 0,
-			                go_q, ge_q, go_t, ge_t, qlen, tlen, query, tp, x1, v1);
+											go_q, ge_q, go_t, go_ge_t, qlen, tlen, query, tp, x1, v1);
 
 			if (r > 0) {
 				if (last_H0_t >= st0 && last_H0_t <= en0)
-					H0 += (int32_t)sv.v16[last_H0_t] - ((int32_t)go_q + ge_q);
+					H0 += sv.v16[last_H0_t];
 				else {
 					++last_H0_t;
-					H0 += (int32_t)sv.u16[last_H0_t] - ((int32_t)go_t[last_H0_t] + ge_t[last_H0_t]);
+					H0 += sv.u16[last_H0_t];
 				}
-			} else {
-				H0 = (int32_t)sv.v16[0] - ((int32_t)go_t[0] + ge_t[0] + go_q + ge_q);
+			}
+			else {
+				H0 = sv.v16[0] - (go_t[0] + ge_t[0]);
 				last_H0_t = 0;
 			}
 		}
@@ -1032,6 +1089,7 @@ float psw_gg3_sse_ps(void *km, int qlen, const uint8_t *query,
 	if (ok) psw_sse_state_destroy(km, &sv);
 	if (go_t) kfree(km, go_t);
 	if (ge_t) kfree(km, ge_t);
+	if (go_ge_t) kfree(km, go_ge_t);
 	if (tp) kfree(km, tp);
 	if (tbf) kfree(km, tbf);
 	psw_free_norm_prof(km, &target_n);
@@ -1042,19 +1100,19 @@ float psw_gg3_sse_ps(void *km, int qlen, const uint8_t *query,
 #else
 
 float psw_gg3_sse_pp(void *km, int qlen, const psw_prof_t *query,
-                     int tlen, const psw_prof_t *target,
-                     int8_t m, const int8_t *mat,
-                     int8_t gapo, int8_t gape, int w,
-                     int *m_cigar_, int *n_cigar_, uint32_t **cigar_)
+										 int tlen, const psw_prof_t *target,
+										 int8_t m, const int8_t *mat,
+										 int8_t gapo, int8_t gape, int w,
+										 int *m_cigar_, int *n_cigar_, uint32_t **cigar_)
 {
 	return psw_gg3_pp(km, qlen, query, tlen, target, m, mat, gapo, gape, w, m_cigar_, n_cigar_, cigar_);
 }
 
 float psw_gg3_sse_ps(void *km, int qlen, const uint8_t *query,
-                     int tlen, const psw_prof_t *target,
-                     int8_t m, const int8_t *mat,
-                     int8_t gapo, int8_t gape, int w,
-                     int *m_cigar_, int *n_cigar_, uint32_t **cigar_)
+										 int tlen, const psw_prof_t *target,
+										 int8_t m, const int8_t *mat,
+										 int8_t gapo, int8_t gape, int w,
+										 int *m_cigar_, int *n_cigar_, uint32_t **cigar_)
 {
 	return psw_gg3_ps(km, qlen, query, tlen, target, m, mat, gapo, gape, w, m_cigar_, n_cigar_, cigar_);
 }
