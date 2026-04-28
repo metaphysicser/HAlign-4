@@ -713,7 +713,7 @@ namespace align {
 
         // 预热阶段：先串行处理固定数量的序列，并且“每比对一条就更新一次 profile”。
         // 目的：让后续 batch 并行阶段在更有信息量的 profile 上工作，降低冷启动阶段的偏差。
-        constexpr std::size_t profile_warmup_count = 1000;
+        constexpr std::size_t profile_warmup_count = 5000;
         std::vector<seq_io::SeqRecord> warmup_chunk(1);
         std::vector<cigar::Cigar_t> warmup_cigar(1);
         std::vector<int> warmup_ref_idx(1, -1);
