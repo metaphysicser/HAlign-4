@@ -80,8 +80,6 @@ namespace align {
     };
 
 
-
-
     // DNA 字符映射到 0..4（A/C/G/T/N，大小写不敏感；其他字符按 N）
     static constexpr uint8_t ScoreChar2Idx[256] = {
         4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 0-15
@@ -101,7 +99,7 @@ namespace align {
         4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 224-239
         4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4   // 240-255
     };
-
+    // TODO 增加用户自定义矩阵
     // DNA5 替换矩阵（A/C/G/T/N）：match=+5，mismatch=-4，涉及 N 为 0。
     // 该矩阵需配合 KSW_EZ_GENERIC_SC 使用。
     static constexpr int8_t dna5_simd_mat[25] = {
@@ -184,8 +182,9 @@ namespace align {
         public:
         // 直接参数构造：读取参考、构建索引、准备共识序列
         RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path,
-                   int kmer_size = 21, int window_size = 10,
-                   int sketch_size = 2000, bool noncanonical = true,
+                   int kmer_size = 19, int window_size = 19,
+                   int sketch_size = 30000, int sketch_kmer_size = 21,
+                   bool noncanonical = true,
                    int threads = 1, std::string msa_cmd = "",
                    bool keep_length = false,
                    bool enable_wfa = false);
@@ -328,6 +327,8 @@ namespace align {
         int kmer_size = 21;
         int window_size = 10;
         int sketch_size = 2000;
+        // 仅用于 sketch 构建的 k-mer 大小，与 minimizer 的 kmer_size 解耦。
+        int sketch_kmer_size = 21;
         int random_seed = 42;
 
         // 并行与外部工具配置

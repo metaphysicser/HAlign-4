@@ -19,7 +19,7 @@ namespace align {
     // 读取参考序列，计算索引，生成共识序列
     RefAligner::RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path,
                            int kmer_size, int window_size,
-                           int sketch_size, bool noncanonical,
+                                                     int sketch_size, int sketch_kmer_size, bool noncanonical,
                            int threads, std::string msa_cmd,
                            bool keep_length,
                            bool enable_wfa)
@@ -27,6 +27,7 @@ namespace align {
           kmer_size(kmer_size),
           window_size(window_size),
           sketch_size(sketch_size),
+                    sketch_kmer_size(sketch_kmer_size),
           noncanonical(noncanonical),
           threads(threads),
           msa_cmd(std::move(msa_cmd)),
@@ -37,7 +38,9 @@ namespace align {
         seq_io::KseqReader reader(ref_fasta_path);
         seq_io::SeqRecord rec;
         while (reader.next(rec)) {
-            auto sketch = mash::sketchFromSequence(rec.seq, kmer_size, sketch_size,
+            // 关键改动：sketch 使用独立的 sketch_kmer_size，
+            // minimizer 仍使用 kmer_size，保持锚点密度/行为不变。
+            auto sketch = mash::sketchFromSequence(rec.seq, sketch_kmer_size, sketch_size,
                                                    noncanonical, random_seed);
             auto minimizer = minimizer::extractMinimizer(rec.seq, kmer_size,
                                                          window_size, noncanonical);
@@ -68,7 +71,7 @@ namespace align {
         // 预计算共识序列的 sketch 和 minimizer，避免重复计算
         consensus_sketch = mash::sketchFromSequence(
             consensus_seq.seq,
-            static_cast<std::size_t>(kmer_size),
+            static_cast<std::size_t>(sketch_kmer_size),
             static_cast<std::size_t>(sketch_size),
             noncanonical,
             random_seed);
@@ -85,6 +88,7 @@ namespace align {
             opt.kmer_size,
             opt.kmer_window,
             opt.sketch_size,
+            opt.sketch_kmer_size,
             true,
             opt.threads,
             opt.msa_cmd,
@@ -260,7 +264,7 @@ namespace align {
         // 计算 query 的 sketch 和 minimizer
         const mash::Sketch qsk = mash::sketchFromSequence(
             q.seq,
-            static_cast<std::size_t>(kmer_size),
+            static_cast<std::size_t>(sketch_kmer_size),
             static_cast<std::size_t>(sketch_size),
             noncanonical,
             random_seed);
@@ -339,7 +343,7 @@ namespace align {
         // 计算 query 的 sketch 和 minimizer
         const mash::Sketch qsk = mash::sketchFromSequence(
             q.seq,
-            static_cast<std::size_t>(kmer_size),
+            static_cast<std::size_t>(sketch_kmer_size),
             static_cast<std::size_t>(sketch_size),
             noncanonical,
             random_seed);

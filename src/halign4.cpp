@@ -18,9 +18,11 @@ static void checkOption(Options& opt) {
     // 数值校验
     if (opt.threads <= 0) throw std::runtime_error("threads must be > 0");
     if (opt.kmer_size <= 0) throw std::runtime_error("kmer_size must be > 0");
+    if (opt.sketch_kmer_size <= 0) throw std::runtime_error("sketch_kmer_size must be > 0");
     if (opt.kmer_window <= 0) throw std::runtime_error("kmer_window must be > 0");
     if (opt.cons_n <= 0) throw std::runtime_error("cons_n must be > 0");
     if (opt.kmer_size > 31) throw std::runtime_error("kmer_size too large (must be <= 31)");
+    if (opt.sketch_kmer_size > 31) throw std::runtime_error("sketch_kmer_size too large (must be <= 31)");
     if (opt.kmer_window >= 256) {
         spdlog::warn("kmer_window >= 256 may be slow; current value: {}", opt.kmer_window);
     }

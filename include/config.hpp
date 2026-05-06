@@ -189,10 +189,14 @@ struct Options {
 
 	// 并行与算法参数
 	int threads = get_default_threads(); // -t：线程数，默认为 CPU 核心数
-	int kmer_size = 15;         // --kmer-size：用于归类/聚类的 k-mer 大小（后续步骤使用）
-	int kmer_window = 10;       // --kmer-window：minimizer 窗口大小 w（以 k-mer 为单位）
+	int kmer_size = 19;         // --kmer-size：用于归类/聚类的 k-mer 大小（后续步骤使用）
+	int kmer_window = 19;       // --kmer-window：minimizer 窗口大小 w（以 k-mer 为单位）
 	int cons_n = 1000;          // --cons-n：挑选用于共识计算的序列数量（Top-K by length）
-	int sketch_size = 2000;     // --sketch-size：用于 sketch 的大小（默认 2000）
+	int sketch_size = 30000;     // --sketch-size：用于 sketch 的大小（默认 30000）
+    // 说明：将 sketch 的 k-mer 大小与 minimizer 的 k-mer 大小解耦。
+    // - kmer_size 仍用于 minimizer/锚点；
+    // - sketch_kmer_size 仅用于 mash::sketchFromSequence，默认 21。
+    int sketch_kmer_size = 21;  // --sketch-kmer-size：用于 sketch 的 k-mer 大小（默认 21）
 	int batch_size = 0;         // --batch-size：对齐批大小；0 表示按模式使用内置默认值
 	bool wfa = false;           // --wfa：启用 WFA 开关（默认关闭，保证现有行为不变）
 	bool seq2seq = false;       // --seq2seq：开启后使用 seq2seq 比对路径；默认使用 seq2profile
@@ -291,14 +295,15 @@ static void setupCli(CLI::App& app, Options& opt) {
     // - 用于 minimizer/哈希相关流程的参数；一般无需改动。
     // - 合法范围 [4,31]（与部分位运算/编码实现约束一致）。
     app.add_option("--kmer-size", opt.kmer_size, "K-mer size used in sketch/minimizer.")
-        ->default_val(15)
+        ->default_val(19)
         ->check(CLI::Range(4, 31));
+
 
     // --kmer-window：minimizer 窗口大小 w（单位：k-mer 数）。
     // 说明：w 越大，minimizer 更稀疏；w 越小，种子更密集但可能更慢。
     app.add_option("--kmer-window", opt.kmer_window,
                    "Minimizer window size w (in number of k-mers).")
-        ->default_val(10)
+        ->default_val(19)
         ->check(CLI::Range(1, 1000000));
 
     // --cons-n：用于生成共识/中心序列的 Top-N（按长度挑选）。
@@ -313,9 +318,17 @@ static void setupCli(CLI::App& app, Options& opt) {
     // --sketch-size：sketch（minhash）大小。
     // 说明：越大越稳健但更慢/更占内存；一般默认 2000 足够。
     app.add_option("--sketch-size", opt.sketch_size, "Sketch size (minhash count).")
-        ->default_val(2000)
+        ->default_val(30000)
         ->check(CLI::Range(1, 10000000));
 
+    // --sketch-kmer-size：仅用于 sketch 构建的 k-mer 大小。
+    // 说明：
+    // - 该参数不会影响 minimizer 的 k（minimizer 仍使用 --kmer-size）；
+    // - 这样可以在不改变 anchor 密度的前提下独立调节 sketch 稳定性。
+    app.add_option("--sketch-kmer-size", opt.sketch_kmer_size,
+                   "K-mer size used specifically for sketch construction.")
+        ->default_val(21)
+        ->check(CLI::Range(4, 31));
     // --batch-size：对齐阶段批大小。
     // 说明：
     // - 仅影响 alignSeq2Profile/alignSeq2Seq 的分批读取与并行粒度；
@@ -368,6 +381,7 @@ static void logParsedOptions(const Options& opt) {
         {"msa_cmd", toString(opt.msa_cmd, valW)},
         {"threads", std::to_string(opt.threads)},
         {"kmer-size", std::to_string(opt.kmer_size)},
+        {"sketch-kmer-size", std::to_string(opt.sketch_kmer_size)},
         {"kmer-window", std::to_string(opt.kmer_window)},
         {"cons_n", std::to_string(opt.cons_n)},
         {"sketch_size", std::to_string(opt.sketch_size)},
