@@ -11,14 +11,16 @@
 static void checkOption(Options& opt) {
     // 文件校验
     file_io::requireRegularFile(opt.input, "input");
-    if (!opt.center_path.empty()) {
-        file_io::requireRegularFile(opt.center_path, "center_path");
+    if (!opt.ref_path.empty()) {
+        file_io::requireRegularFile(opt.ref_path, "ref_path");
     }
     if (!opt.ref_align_path.empty()) {
         file_io::requireRegularFile(opt.ref_align_path, "ref_align_path");
-        if (opt.center_path.empty()) {
+        if (opt.ref_path.empty()) {
             throw std::runtime_error("--ref-align requires -r/--ref to be provided as the matching reference FASTA");
         }
+        // 验证 -r 和 --ref-align 的序列一致性（删除 gap 后）
+        validateRefAlignedConsistency(FilePath(opt.ref_path), FilePath(opt.ref_align_path));
     }
 
     // 数值校验
@@ -102,15 +104,15 @@ int main(int argc, char** argv) {
         const FilePath consensus_file = FilePath(opt.workdir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_FASTA;
         const FilePath consensus_json_file = FilePath(opt.workdir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_JSON;
 
-        // 处理共识序列
-        if (!opt.center_path.empty())
+        // 处理参考序列
+        if (!opt.ref_path.empty())
         {
-            spdlog::info("Using user-specified center sequence: {}", opt.center_path);
+            spdlog::info("Using user-specified reference sequence: {}", opt.ref_path);
             if (std::filesystem::exists(consensus_unaligned_file)) {
                 file_io::removeAll(consensus_unaligned_file);
             }
-            file_io::copyFile(FilePath(opt.center_path), consensus_unaligned_file);
-            spdlog::info("Center sequence copied to: {}", consensus_unaligned_file.string());
+            file_io::copyFile(FilePath(opt.ref_path), consensus_unaligned_file);
+            spdlog::info("Reference sequence copied to: {}", consensus_unaligned_file.string());
         }
 
         // 快速路径：序列数 <= cons_n 且不保留长度时直接输出
@@ -129,7 +131,7 @@ int main(int argc, char** argv) {
             spdlog::info("halign4 End!");
             return 0;
         }
-        else if (opt.center_path.empty())
+        else if (opt.ref_path.empty())
         {
             // 生成共识序列
             alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, opt.msa_cmd, opt.threads);
@@ -147,7 +149,7 @@ int main(int argc, char** argv) {
         }
 
         // 比对阶段
-        const FilePath ref_path = opt.center_path.empty() ? consensus_file : FilePath(opt.center_path);
+        const FilePath ref_path = opt.ref_path.empty() ? consensus_file : FilePath(opt.ref_path);
         align::RefAligner ref_aligner(opt, ref_path);
 
         // 批大小策略：

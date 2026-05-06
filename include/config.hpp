@@ -183,8 +183,8 @@ struct Options {
 	std::string output;         // -o：最终输出文件（写入位置）
 	std::string workdir;        // -w：工作目录，所有中间文件（data/raw, data/clean 等）放在该目录下
 
-	// 可选参数：中心序列、MSA 命令模板
-    std::string center_path;    // -r：可选，指定中心序列文件路径，若指定则绕过自动选择
+	// 可选参数：参考序列、MSA 命令模板
+	std::string ref_path;       // -r：可选，指定参考/中心序列文件路径，若指定则绕过自动选择
     std::string ref_align_path; // --ref-align：与 -r/--ref 对应的“已比对 MSA”文件路径
 	std::string msa_cmd;        // -p：用于对共识序列做 MSA 的命令模板（可以包含 {input} {output} {thread} 占位符）
 
@@ -260,7 +260,7 @@ static void setupCli(CLI::App& app, Options& opt) {
     // - 不提供时：程序会在预处理阶段自动选择并生成共识/中心序列；
     // - 提供时：会使用该序列作为参考（并在 workdir 中进行统一管理）。
     // 典型用途：COVID 数据集里可以用 covid-ref 的第一条（武汉参考）作为 center。
-    app.add_option("-r,--ref", opt.center_path,
+    app.add_option("-r,--ref", opt.ref_path,
                    "Center/reference sequence in FASTA (optional). If not set, a consensus/center is generated.")
         ->check(CLI::ExistingFile);
 
@@ -269,7 +269,7 @@ static void setupCli(CLI::App& app, Options& opt) {
     // - 当用户已经为 -r 准备好了比对结果时，可以直接复用该 MSA，避免再次运行 MSA 工具；
     // - 仍然保留 -r 作为“参考/中心序列 FASTA”的入口，保持旧行为不变；
     // - 该参数不是可执行文件，也不是普通的“可选字符串”，因此直接按存在文件路径校验。
-    app.add_option("--ref-align", opt.ref_align_path,
+    app.add_option("-a,--align-ref", opt.ref_align_path,
                    "Pre-aligned MSA file for the reference set provided by -r/--ref.")
         ->check(CLI::ExistingFile);
 
@@ -386,7 +386,7 @@ static void logParsedOptions(const Options& opt) {
         {"input", toString(opt.input, valW)},
         {"output", toString(opt.output, valW)},
         {"workdir", toString(opt.workdir, valW)},
-        {"center-path", toString(opt.center_path, valW)},
+        {"ref", toString(opt.ref_path, valW)},
         {"ref-align", toString(opt.ref_align_path, valW)},
         {"msa_cmd", toString(opt.msa_cmd, valW)},
         {"threads", std::to_string(opt.threads)},

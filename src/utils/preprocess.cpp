@@ -243,3 +243,195 @@ void alignConsensusSequence(const FilePath& input_file, const FilePath& output_f
     spdlog::info("Finished consensus alignment. Total elapsed: {:.3f} s", elapsed_s);
 }
 
+// ==============================================================
+// validateRefAlignedConsistency
+//
+// 说明：验证两个 FASTA 文件的序列一致性（删除 gap 后）。
+// 使用 hash map 支持序列顺序不同的情况。
+//
+// 实现步骤：
+// 1) 读取 ref_fasta，按 ID 建立 unordered_map（key=ID, value=去gap后的序列）
+// 2) 逐条读取 ref_aligned，从 map 中查找匹配的序列并比较
+// 3) 最后检查 ref_fasta 的序列是否全部被消耗
+//
+// ==============================================================
+void validateRefAlignedConsistency(const FilePath& ref_fasta, const FilePath& ref_aligned)
+{
+    spdlog::info("Validating reference and aligned reference consistency");
+    spdlog::info("  -r/--ref: {}", ref_fasta.string());
+    spdlog::info("  --ref-align: {}", ref_aligned.string());
+
+    auto toUpperBase = [](char c) -> char {
+        return static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    };
+
+    // 第一步：读取 ref_fasta
+    // 要求：ref_fasta 不能有 gap，并且统一转成大写保存
+    std::unordered_map<std::string, std::string> ref_seqs;
+
+    {
+        seq_io::KseqReader reader(ref_fasta);
+        seq_io::SeqRecord rec;
+
+        while (reader.next(rec)) {
+            if (ref_seqs.find(rec.id) != ref_seqs.end()) {
+                std::ostringstream oss;
+                oss << "Duplicate sequence ID in -r/--ref: '" << rec.id << "'";
+                spdlog::error(oss.str());
+                throw std::runtime_error(oss.str());
+            }
+
+            std::string seq;
+            seq.reserve(rec.seq.size());
+
+            for (std::size_t i = 0; i < rec.seq.size(); ++i) {
+                char c = rec.seq[i];
+
+                if (c == '-') {
+                    std::ostringstream oss;
+                    oss << "Gap character found in -r/--ref for ID '" << rec.id
+                        << "' at position " << (i + 1)
+                        << ". Reference FASTA must not contain gaps.";
+                    spdlog::error(oss.str());
+                    throw std::runtime_error(oss.str());
+                }
+
+                seq += toUpperBase(c);
+            }
+
+            ref_seqs.emplace(rec.id, std::move(seq));
+        }
+    }
+
+    spdlog::info("Loaded {} sequences from -r/--ref", ref_seqs.size());
+
+    // 第二步：读取 ref_aligned
+    // 要求：
+    // 1) ID 必须存在于 ref_fasta
+    // 2) ref_aligned 所有序列的对齐长度必须一致
+    // 3) 删除 gap 后，与 ref_fasta 对应序列一致，忽略大小写
+    std::unordered_set<std::string> matched;
+    std::optional<std::size_t> expected_aligned_len;
+
+    {
+        seq_io::KseqReader reader(ref_aligned);
+        seq_io::SeqRecord rec;
+        std::size_t seq_idx = 0;
+
+        while (reader.next(rec)) {
+            ++seq_idx;
+
+            if (matched.find(rec.id) != matched.end()) {
+                std::ostringstream oss;
+                oss << "Duplicate sequence ID in --ref-align: '" << rec.id << "'";
+                spdlog::error(oss.str());
+                throw std::runtime_error(oss.str());
+            }
+
+            // 检查 aligned FASTA 中所有序列长度是否一致
+            if (!expected_aligned_len.has_value()) {
+                expected_aligned_len = rec.seq.size();
+            } else if (rec.seq.size() != expected_aligned_len.value()) {
+                std::ostringstream oss;
+                oss << "Aligned sequence length mismatch in --ref-align for ID '" << rec.id
+                    << "': expected aligned length " << expected_aligned_len.value()
+                    << ", but got " << rec.seq.size()
+                    << ". All sequences in --ref-align must have the same aligned length.";
+                spdlog::error(oss.str());
+                throw std::runtime_error(oss.str());
+            }
+
+            auto it = ref_seqs.find(rec.id);
+            if (it == ref_seqs.end()) {
+                std::ostringstream oss;
+                oss << "Sequence ID in --ref-align not found in -r/--ref: '" << rec.id << "'";
+                spdlog::error(oss.str());
+                throw std::runtime_error(oss.str());
+            }
+
+            const std::string& ref_seq = it->second;
+
+            // 删除 gap，并记录 ungapped position 对应的 aligned position
+            std::string align_ungapped;
+            std::vector<std::size_t> aligned_pos_of_ungapped_base;
+
+            align_ungapped.reserve(rec.seq.size());
+            aligned_pos_of_ungapped_base.reserve(rec.seq.size());
+
+            for (std::size_t i = 0; i < rec.seq.size(); ++i) {
+                char c = rec.seq[i];
+
+                if (c == '-') {
+                    continue;
+                }
+
+                align_ungapped += toUpperBase(c);
+                aligned_pos_of_ungapped_base.push_back(i + 1);  // 1-based aligned position
+            }
+
+            // 先检查长度
+            if (ref_seq.size() != align_ungapped.size()) {
+                std::ostringstream oss;
+                oss << "Sequence length mismatch after removing gaps for ID '" << rec.id << "': "
+                    << "-r has " << ref_seq.size() << " bases, "
+                    << "--ref-align has " << align_ungapped.size() << " bases.";
+
+                const std::size_t min_len = std::min(ref_seq.size(), align_ungapped.size());
+                if (min_len < ref_seq.size()) {
+                    oss << " First extra base in -r is at ungapped position " << (min_len + 1)
+                        << ": -r='" << ref_seq[min_len] << "', --ref-align=<end>.";
+                } else if (min_len < align_ungapped.size()) {
+                    oss << " First extra base in --ref-align is at ungapped position " << (min_len + 1)
+                        << ", aligned position " << aligned_pos_of_ungapped_base[min_len]
+                        << ": -r=<end>, --ref-align='" << align_ungapped[min_len] << "'.";
+                }
+
+                spdlog::error(oss.str());
+                throw std::runtime_error(oss.str());
+            }
+
+            // 再检查具体碱基差异
+            for (std::size_t i = 0; i < ref_seq.size(); ++i) {
+                if (ref_seq[i] != align_ungapped[i]) {
+                    std::ostringstream oss;
+                    oss << "Sequence content mismatch after removing gaps for ID '" << rec.id << "' "
+                        << "at ungapped position " << (i + 1)
+                        << ", aligned position " << aligned_pos_of_ungapped_base[i]
+                        << ": -r='" << ref_seq[i]
+                        << "', --ref-align='" << align_ungapped[i] << "'.";
+
+                    spdlog::error(oss.str());
+                    throw std::runtime_error(oss.str());
+                }
+            }
+
+            matched.insert(rec.id);
+        }
+
+        spdlog::info("Validated {} sequences from --ref-align", seq_idx);
+    }
+
+    // 第三步：检查 ref_fasta 中所有序列是否都在 ref_aligned 中出现
+    if (matched.size() != ref_seqs.size()) {
+        for (const auto& kv : ref_seqs) {
+            if (matched.find(kv.first) == matched.end()) {
+                std::ostringstream oss;
+                oss << "Sequence ID in -r/--ref not found in --ref-align: '" << kv.first << "'";
+                spdlog::error(oss.str());
+                throw std::runtime_error(oss.str());
+            }
+        }
+
+        std::ostringstream oss;
+        oss << "Sequence count mismatch: -r has " << ref_seqs.size()
+            << " sequences, but --ref-align has " << matched.size()
+            << " matching sequences.";
+        spdlog::error(oss.str());
+        throw std::runtime_error(oss.str());
+    }
+
+    spdlog::info(
+        "Successfully validated --ref-align consistency: all {} sequences matched",
+        ref_seqs.size()
+    );
+}

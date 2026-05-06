@@ -5,6 +5,15 @@
 #include "config.hpp"
 #include "utils.h"
 #include "consensus.h"
+#include <algorithm>
+#include <cctype>
+#include <optional>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 // ==============================================================
 // 预处理模块（preprocess）头文件说明（详细中文注释）
@@ -78,5 +87,30 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
 void alignConsensusSequence(const FilePath& input_file, const FilePath& output_file,
                             const std::string& msa_cmd, int threads);
 
+// ==============================================================
+// validateRefAlignedConsistency
+//
+// 说明：验证两个 FASTA 文件的序列一致性（删除 gap 后）。
+// 
+// 用途：当用户同时提供 -r/--ref（参考 FASTA）和 --ref-align（预对齐 MSA）时，
+// 需要验证两个文件的序列内容是否匹配（允许序列顺序不同）。
+//
+// 设计：
+// - 将 ref_fasta 中的所有序列按 ID 索引存储在 hash map 中（去 gap 后的版本）
+// - 逐条读取 ref_aligned 中的序列，从 map 中查找匹配的序列并比较
+// - 这样支持两个文件序列顺序不同的情况
+//
+// 参数：
+//  - ref_fasta: 参考 FASTA 文件路径（-r/--ref）
+//  - ref_aligned: 预对齐 MSA 文件路径（--ref-align）
+//
+// 异常：
+//  - 序列 ID 不匹配：ref_aligned 中存在 ref_fasta 中没有的序列
+//  - 序列内容不匹配：删除 gap 后的序列内容不相同
+//  - 序列数不匹配：两个文件的序列总数不同
+//  - 任何不匹配情况都会抛出 std::runtime_error
+//
+// ==============================================================
+void validateRefAlignedConsistency(const FilePath& ref_fasta, const FilePath& ref_aligned);
 
 #endif //HALIGN4_PREPROCESS_H

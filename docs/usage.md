@@ -61,13 +61,13 @@ Number of CPU threads.
 #### `--kmer-size <int>`
 K-mer size used by minimizer / seeding logic.
 
-- Default: `15`
+- Default: `19`
 - Range check: `4 .. 31`
 
 #### `--kmer-window <int>`
 Minimizer window size **in number of k-mers**.
 
-- Default: `10`
+- Default: `19`
 
 #### `--cons-n <int>`
 Number of sequences selected for consensus step (Top-K by sequence length).
@@ -77,7 +77,7 @@ Number of sequences selected for consensus step (Top-K by sequence length).
 #### `--sketch-size <int>`
 Sketch size used by Mash/MinHash-related components.
 
-- Default: `2000`
+- Default: `30000`
 
 #### `-r, --ref <path>`
 Provide an explicit center/reference sequence file (FASTA).
@@ -85,7 +85,7 @@ Provide an explicit center/reference sequence file (FASTA).
 - If provided, the program will use these sequences as the reference/center set instead of auto-selecting.
 - Validation: must exist (`CLI::ExistingFile`)
 
-#### `--ref-align <path>`
+#### `-a, --align-ref <path>`
 Provide the **pre-aligned MSA** corresponding to `-r/--ref`.
 
 - This option is useful when your reference set has already been aligned and you do **not** want HAlign-4 to run the external MSA step again.
@@ -251,7 +251,7 @@ q1    ACGTTAC
 
 ### Case B: `--keep-length`
 
-- Guarantee: **all references in `-c` will not contain inserted gaps**.
+- Guarantee: **all references in `-r` will not contain inserted gaps**.
 - The pipeline will drop columns that would introduce gaps in any reference.
 
 Using the original MSA snippet, dropping the column where `ref1` has `-` *and* the column where `ref2` has `-` yields:

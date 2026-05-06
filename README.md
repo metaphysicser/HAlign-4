@@ -56,7 +56,7 @@ The most important parameters are:
 - `-w/--workdir`: working directory (optional; default: `./tmp-<random>`)
 - `-p/--msa-cmd`: MSA method (keyword: `minipoa`/`mafft`/`clustalo`, or a custom template)
 - `-r/--ref`: provide a reference/center FASTA (optional)
-- `--ref-align`: provide the pre-aligned MSA for the `-r/--ref` reference set
+- `--align-ref`: provide the pre-aligned MSA for the `-r/--ref` reference set
 - `--keep-length`: keep reference length coordinate rules
 
 For the full parameter list and detailed examples, see [`docs/usage.md`](docs/usage.md).
