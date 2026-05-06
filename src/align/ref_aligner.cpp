@@ -149,6 +149,7 @@ namespace align {
                                         const std::string& ref_string,
                                        const std::string& query,
                                        double similarity,
+                                       int thread,
                                        const SeedHits* ref_minimizer,
                                        const SeedHits* query_minimizer) const
     {
@@ -169,8 +170,12 @@ namespace align {
         }
 
         const anchor::Anchors anchors = minimizer::collect_anchors(*ref_mz_ptr, *qry_mz_ptr);
-        cigar::Cigar_t result = globalAlignSeq2Profile(ref, ref_string, query, anchors);
-
+            cigar::Cigar_t result;
+        if (thread > 0){
+            result = globalAlignSeq2ProfileParallel(ref, ref_string, query, anchors, thread);
+        } else {
+            result = globalAlignSeq2Profile(ref, ref_string, query, anchors);
+        }
 #ifdef _DEBUG
         const std::size_t cigar_ref_len = cigar::getRefLength(result);
         const std::size_t cigar_qry_len = cigar::getQueryLength(result);
@@ -345,7 +350,8 @@ namespace align {
                        seq_io::SeqWriter& out,
                        seq_io::SeqWriter& out_insertion,
                        cigar::Cigar_t& out_cigar,
-                       int& out_ref_idx) const
+                       int& out_ref_idx,
+                       int thread) const
     {
         // 初始化输出占位，便于调用方在调试时识别“未写入”状态
         out_cigar.clear();
@@ -386,9 +392,8 @@ namespace align {
 
         // 执行全局比对
         cigar::Cigar_t initial_cigar = Seq2ProfileWithAnchor(
-            best_ref_profile, best_ref.seq, q.seq, best_jaccard,
-            &ref_minimizers[best_ref_idx],
-            &query_minimizer);
+            best_ref_profile, best_ref.seq, q.seq, best_jaccard, thread,
+            &ref_minimizers[best_ref_idx], &query_minimizer);
 
         // 单参考序列：直接使用初始比对结果
         if (ref_sequences.size() == 1) {
@@ -420,8 +425,7 @@ namespace align {
         // 多参考序列 + 非 keep_length：有插入时与共识序列二次比对
         const double consensus_similarity = mash::jaccard(qsk, consensus_sketch);
         cigar::Cigar_t recheck_cigar = Seq2ProfileWithAnchor(
-            consensus_profile,consensus_seq.seq, q.seq, consensus_similarity,
-            &consensus_minimizer, &query_minimizer);
+            consensus_profile,consensus_seq.seq, q.seq, consensus_similarity, thread, &consensus_minimizer, &query_minimizer);
 
         out_cigar = recheck_cigar;
         out_ref_idx = -1; // 使用共识作为最终参考，避免误解为某条原始参考序列索引
@@ -747,7 +751,8 @@ namespace align {
                 warmup_out,
                 warmup_out_insertion,
                 warmup_cigar[0],
-                warmup_ref_idx[0]);
+                warmup_ref_idx[0],
+                threads);
 
             // 每条序列比对完成后立即更新一次 profile，严格满足“比对一次、更新一次”。
             updateProfilesFromChunk(warmup_chunk, warmup_cigar, warmup_ref_idx);
@@ -798,7 +803,7 @@ namespace align {
                         out,
                         out_insertion,
                         cigar_chunk[static_cast<std::size_t>(i)],
-                        ref_idx_chunk[static_cast<std::size_t>(i)]);
+                        ref_idx_chunk[static_cast<std::size_t>(i)], 0);
                 }
             }
 

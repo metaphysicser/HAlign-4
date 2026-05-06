@@ -532,28 +532,19 @@ namespace align
     }
 
     cigar::Cigar_t globalAlignSeq2ProfileParallel(const ProfileMatrix& ref,
-                                    const std::string& ref_string,
-                                  const std::string& query,
-                                  const anchor::Anchors& anchors,
-                                  int thread){
+                                               const std::string& ref_string,
+                                               const std::string& query,
+                                               const anchor::Anchors& anchors,
+                                               int thread)
+    {
         align::AlignConfig cfg;
+        align::AlignConfig first_cfg;
+        first_cfg.flag = KSW_EZ_GENERIC_SC;
 
-        // 1) 全局边界处理：与其他对齐入口保持一致，确保空输入直接返回合法 CIGAR。
-        if (ref.len == 0 || query.empty()) {
-            return globalAlignPSW(ref, query, cfg);
-        }
-
-        // 若 profile 元数据异常，退化为整段对齐，避免越界访问。
-        if (ref.dim <= 0 || ref.prof.size() < static_cast<std::size_t>(ref.len) * static_cast<std::size_t>(ref.dim)) {
-            spdlog::error("globalAlignSeq2Profile: invalid profile matrix (len={}, dim={}, prof_size={}), fallback to full PSW",
-                          ref.len, ref.dim, ref.prof.size());
-            return globalAlignPSW(ref, query, cfg);
-        }
-
-        const std::size_t ref_len = static_cast<std::size_t>(ref.len);
+        const std::size_t ref_len = ref_string.size();
         const std::size_t qry_len = query.size();
 
-        // 2) 链化锚点并排序：流程与 globalAlignSeq2Seq 对齐，保持行为一致。
+        // 链化锚点：获取最佳链
         anchor::Anchors sorted_anchors = anchors;
         anchor::ChainParams chain_params = anchor::default_chain_params();
         anchor::Anchors chain_anchors = anchor::chainAnchors(sorted_anchors, chain_params);
@@ -561,6 +552,7 @@ namespace align
             return globalAlignPSW(ref, query, cfg);
         }
 
+        // 按 query 坐标排序
         std::sort(chain_anchors.begin(), chain_anchors.end(),
                   [](const anchor::Anchor& a, const anchor::Anchor& b) {
                       if (a.pos_qry != b.pos_qry) return a.pos_qry < b.pos_qry;
@@ -573,150 +565,184 @@ namespace align
             std::size_t qry_start = 0;
             std::size_t qry_end = 0;
             align::AlignConfig seg_cfg{};
+            bool reverse_for_align = false;
         };
 
         std::vector<SegmentTask> tasks;
         tasks.reserve(chain_anchors.size() * 2 + 2);
 
-        // 3) 先串行构建稳定分段任务，再并行计算每段，避免并行阶段共享状态竞争。
         std::size_t ref_pos = 0;
         std::size_t qry_pos = 0;
+
         auto push_segment = [&](std::size_t ref_start, std::size_t ref_end,
                                 std::size_t qry_start, std::size_t qry_end,
-                                const align::AlignConfig& seg_cfg) {
-            SegmentTask t;
-            t.ref_start = std::min(ref_start, ref_len);
-            t.ref_end = std::min(ref_end, ref_len);
-            t.qry_start = std::min(qry_start, qry_len);
-            t.qry_end = std::min(qry_end, qry_len);
-            if (t.ref_end < t.ref_start) t.ref_end = t.ref_start;
-            if (t.qry_end < t.qry_start) t.qry_end = t.qry_start;
+                                align::AlignConfig seg_cfg,
+                                bool reverse_for_align = false) {
+            // 边界裁剪：保持和串行版 append_segment 完全一致
+            ref_start = std::min(ref_start, ref_len);
+            ref_end = std::min(ref_end, ref_len);
+            qry_start = std::min(qry_start, qry_len);
+            qry_end = std::min(qry_end, qry_len);
 
-            // 关键修复：空任务不入队，避免无效分段在后续合并时造成噪声与额外开销。
-            if (t.ref_start == t.ref_end && t.qry_start == t.qry_end) {
-                return;
-            }
+            if (ref_end < ref_start) ref_end = ref_start;
+            if (qry_end < qry_start) qry_end = qry_start;
 
-            t.seg_cfg = seg_cfg;
-            tasks.push_back(t);
+            SegmentTask task;
+            task.ref_start = ref_start;
+            task.ref_end = ref_end;
+            task.qry_start = qry_start;
+            task.qry_end = qry_end;
+            task.seg_cfg = seg_cfg;
+            task.reverse_for_align = reverse_for_align;
+
+            tasks.push_back(std::move(task));
+
+            // 串行版 append_segment 最终一定把游标推进到 ref_end/qry_end：
+            // 1) 正常情况下 c_ref == seg_ref_len, c_qry == seg_qry_len
+            // 2) fallback 情况下显式 ref_pos = ref_end, qry_pos = qry_end
+            ref_pos = ref_end;
+            qry_pos = qry_end;
         };
 
-        // 左端
+        // 左端：起点到第一个锚点
         {
             const auto& first = chain_anchors.front();
-            const std::size_t first_ref = std::min(static_cast<std::size_t>(first.pos_ref), ref_len);
-            const std::size_t first_qry = std::min(static_cast<std::size_t>(first.pos_qry), qry_len);
-            push_segment(ref_pos, first_ref, qry_pos, first_qry, cfg);
-
-            // 关键修复：游标只能前进不能回退，避免后续重复覆盖已处理区间。
-            ref_pos = std::max(ref_pos, first_ref);
-            qry_pos = std::max(qry_pos, first_qry);
+            push_segment(ref_pos, first.pos_ref, qry_pos, first.pos_qry, first_cfg);
         }
 
-        // 锚点段 + 锚点间 gap 段
+        // 逐锚点：处理 span 和 gap
         for (std::size_t i = 0; i < chain_anchors.size(); ++i) {
             const auto& a = chain_anchors[i];
+
             const std::size_t a_ref_start = static_cast<std::size_t>(a.pos_ref);
             const std::size_t a_qry_start = static_cast<std::size_t>(a.pos_qry);
-            const std::size_t a_ref_end = std::min(a_ref_start + static_cast<std::size_t>(a.span), ref_len);
-            const std::size_t a_qry_end = std::min(a_qry_start + static_cast<std::size_t>(a.span), qry_len);
+            const std::size_t a_ref_end = a_ref_start + static_cast<std::size_t>(a.span);
+            const std::size_t a_qry_end = a_qry_start + static_cast<std::size_t>(a.span);
 
-            // 关键修复：若锚点区间已被当前前沿完全覆盖，则跳过，防止重复分段。
-            if (!(a_ref_end <= ref_pos && a_qry_end <= qry_pos)) {
-                const std::size_t anchor_ref_end = std::max(ref_pos, a_ref_end);
-                const std::size_t anchor_qry_end = std::max(qry_pos, a_qry_end);
-                push_segment(ref_pos, anchor_ref_end, qry_pos, anchor_qry_end, cfg);
-                ref_pos = anchor_ref_end;
-                qry_pos = anchor_qry_end;
-            }
+            push_segment(ref_pos, a_ref_end, qry_pos, a_qry_end, cfg);
 
             if (i + 1 < chain_anchors.size()) {
                 const auto& b = chain_anchors[i + 1];
-                const std::size_t b_ref = std::min(static_cast<std::size_t>(b.pos_ref), ref_len);
-                const std::size_t b_qry = std::min(static_cast<std::size_t>(b.pos_qry), qry_len);
-
-                // 关键修复：gap 终点同样执行单调前沿约束，禁止 ref/qry 游标回退。
-                const std::size_t gap_ref_end = std::max(ref_pos, b_ref);
-                const std::size_t gap_qry_end = std::max(qry_pos, b_qry);
-                push_segment(ref_pos, gap_ref_end, qry_pos, gap_qry_end, cfg);
-                ref_pos = gap_ref_end;
-                qry_pos = gap_qry_end;
+                push_segment(ref_pos, b.pos_ref, qry_pos, b.pos_qry, cfg);
             }
         }
 
-        // 右端
-        push_segment(ref_pos, ref_len, qry_pos, qry_len, cfg);
+        // 右端：最后一个锚点到末尾
+        // 保留串行版逻辑：尾段启用“反向比对 + CIGAR 回正”
+        push_segment(ref_pos, ref_len, qry_pos, qry_len, cfg, true);
 
         std::vector<cigar::Cigar_t> task_cigars(tasks.size());
 
-        // 4) 并行计算每个分段：每个任务只写自己的索引，避免锁与竞争。
-#ifdef _OPENMP
+    #ifdef _OPENMP
         const int use_threads = thread > 0 ? thread : omp_get_max_threads();
-#pragma omp parallel for default(none) shared(tasks, ref, ref_string, query, task_cigars) num_threads(use_threads) schedule(static)
-#endif
-        for (int i = 0; i < static_cast<int>(tasks.size()); ++i) {
-            const SegmentTask& t = tasks[static_cast<std::size_t>(i)];
-            const std::size_t seg_ref_len = t.ref_end - t.ref_start;
-            const std::size_t seg_qry_len = t.qry_end - t.qry_start;
+
+    #pragma omp parallel for default(none) shared(tasks, task_cigars, ref, query) num_threads(use_threads) schedule(static)
+    #endif
+        for (int task_idx = 0; task_idx < static_cast<int>(tasks.size()); ++task_idx) {
+            const SegmentTask& task = tasks[static_cast<std::size_t>(task_idx)];
+
+            const std::size_t seg_ref_len = task.ref_end - task.ref_start;
 
             ProfileMatrix seg_ref;
             seg_ref.len = static_cast<int>(seg_ref_len);
             seg_ref.dim = ref.dim;
             seg_ref.depth = ref.depth;
+
             if (seg_ref_len > 0) {
-                const std::size_t offset = t.ref_start * static_cast<std::size_t>(ref.dim);
+                const std::size_t offset = task.ref_start * static_cast<std::size_t>(ref.dim);
                 const std::size_t count = seg_ref_len * static_cast<std::size_t>(ref.dim);
-                seg_ref.prof.assign(ref.prof.begin() + static_cast<std::ptrdiff_t>(offset),
-                                    ref.prof.begin() + static_cast<std::ptrdiff_t>(offset + count));
+
+                seg_ref.prof.assign(
+                    ref.prof.begin() + static_cast<std::ptrdiff_t>(offset),
+                    ref.prof.begin() + static_cast<std::ptrdiff_t>(offset + count)
+                );
             }
 
-            const std::string seg_qry = query.substr(t.qry_start, seg_qry_len);
-            //const std::string seg_ref_1 = ref_string.substr(t.ref_start, seg_ref_len);
-            cigar::Cigar_t seg_cigar = globalAlignPSW(seg_ref, seg_qry, t.seg_cfg);
+            std::string seg_qry = query.substr(task.qry_start, task.qry_end - task.qry_start);
+            const std::size_t seg_qry_len = seg_qry.size();
 
-            std::string c_str1 = cigar::cigarToString(seg_cigar);
+            // 保留串行版尾段反向比对逻辑
+            if (task.reverse_for_align) {
+                std::reverse(seg_qry.begin(), seg_qry.end());
+
+                // ProfileMatrix 是按“列块(dim)”线性存储，反向时必须按列翻转
+                if (seg_ref_len > 1) {
+                    const std::size_t dim = static_cast<std::size_t>(seg_ref.dim);
+                    std::vector<uint32_t> reversed_prof(seg_ref.prof.size(), 0U);
+
+                    for (std::size_t dst_col = 0; dst_col < seg_ref_len; ++dst_col) {
+                        const std::size_t src_col = (seg_ref_len - 1U) - dst_col;
+                        const std::size_t src_off = src_col * dim;
+                        const std::size_t dst_off = dst_col * dim;
+
+                        std::copy(
+                            seg_ref.prof.begin() + static_cast<std::ptrdiff_t>(src_off),
+                            seg_ref.prof.begin() + static_cast<std::ptrdiff_t>(src_off + dim),
+                            reversed_prof.begin() + static_cast<std::ptrdiff_t>(dst_off)
+                        );
+                    }
+
+                    seg_ref.prof.swap(reversed_prof);
+                }
+            }
+
+            cigar::Cigar_t seg_cigar = globalAlignPSW(seg_ref, seg_qry, task.seg_cfg);
+
+            if (task.reverse_for_align) {
+                std::reverse(seg_cigar.begin(), seg_cigar.end());
+            }
 
             const std::size_t c_ref = cigar::getRefLength(seg_cigar);
             const std::size_t c_qry = cigar::getQueryLength(seg_cigar);
 
-            // 局部兜底：若某段 CIGAR 消耗与分段长度不一致，强制用 I/D 覆盖该段。
             if (c_ref != seg_ref_len || c_qry != seg_qry_len) {
-#ifdef _DEBUG
-                spdlog::warn("globalAlignSeq2Profile(seg): segment cigar mismatch (expected ref:{}/qry:{}, got ref:{}/qry:{}); forcing fallback",
-                             seg_ref_len, seg_qry_len, c_ref, c_qry);
-#endif
+    #ifdef _DEBUG
+                spdlog::warn(
+                    "globalAlignSeq2Profile(seg): segment cigar mismatch "
+                    "(expected ref:{}/qry:{}, got ref:{}/qry:{}); "
+                    "forcing robust fallback for this segment",
+                    seg_ref_len, seg_qry_len, c_ref, c_qry
+                );
+    #endif
+
+                // 兜底策略：Query 全 I、Ref 全 D
                 cigar::Cigar_t forced_cigar;
+
                 if (seg_qry_len > 0) {
-                    forced_cigar.push_back(cigar::cigarToInt('I', static_cast<uint32_t>(seg_qry_len)));
+                    forced_cigar.push_back(
+                        cigar::cigarToInt('I', static_cast<uint32_t>(seg_qry_len))
+                    );
                 }
+
                 if (seg_ref_len > 0) {
-                    forced_cigar.push_back(cigar::cigarToInt('D', static_cast<uint32_t>(seg_ref_len)));
+                    forced_cigar.push_back(
+                        cigar::cigarToInt('D', static_cast<uint32_t>(seg_ref_len))
+                    );
                 }
-                task_cigars[static_cast<std::size_t>(i)] = std::move(forced_cigar);
+
+                task_cigars[static_cast<std::size_t>(task_idx)] = std::move(forced_cigar);
             } else {
-                task_cigars[static_cast<std::size_t>(i)] = std::move(seg_cigar);
+                task_cigars[static_cast<std::size_t>(task_idx)] = std::move(seg_cigar);
             }
         }
 
-        // 5) 串行按任务索引合并，保证输出确定性（不依赖并行执行顺序）。
+        // 按原始分段顺序合并，保证结果不受并行执行顺序影响
         cigar::Cigar_t result;
-        // int i = 0;
-        result.reserve(tasks.size() * 2 + 2);
-        for (const auto& c : task_cigars) {
-            // std::string c_str = cigar::cigarToString(c);
-            cigar::appendCigar(result, c);
-            // std::string cigar_str = cigar::cigarToString(result);
-            // i++;
+        result.reserve(chain_anchors.size() * 2 + 2);
+
+        for (const auto& seg_cigar : task_cigars) {
+            cigar::appendCigar(result, seg_cigar);
         }
 
-        std::string cigar_str = cigar::cigarToString(result);
-
-        // 6) 最终一致性校验：不一致时回退整段 profile-vs-seq 全局对齐。
+        // 最终一致性检查
         const std::size_t total_ref = cigar::getRefLength(result);
         const std::size_t total_qry = cigar::getQueryLength(result);
+
         if (total_ref != ref_len || total_qry != qry_len) {
-            spdlog::error("globalAlignSeq2Profile: final cigar mismatch (ref:{}/{}, qry:{}/{}), fallback to full PSW",
-                          total_ref, ref_len, total_qry, qry_len);
+            spdlog::error(
+                "globalAlignSeq2Seq: final cigar mismatch (ref:{}/{}, qry:{}/{}), fallback to global",
+                total_ref, ref_len, total_qry, qry_len
+            );
             return globalAlignPSW(ref, query, cfg);
         }
 

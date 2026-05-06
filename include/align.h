@@ -213,6 +213,7 @@ namespace align {
                                     const std::string& ref_string,
                                    const std::string& query,
                                    double similarity,
+                                   int thread = 0,
                                    const SeedHits* ref_minimizer = nullptr,
                                    const SeedHits* query_minimizer = nullptr) const;
 
@@ -232,7 +233,8 @@ namespace align {
                                seq_io::SeqWriter& out,
                                seq_io::SeqWriter& out_insertion,
                                cigar::Cigar_t& out_cigar,
-                               int& out_ref_idx) const;
+                               int& out_ref_idx,
+                               int thread = 0) const;
 
         // 根据一个 chunk 的对齐结果增量更新 profile 计数（不改变 profile 形状）
         void updateProfilesFromChunk(
