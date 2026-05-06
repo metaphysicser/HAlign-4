@@ -17,12 +17,13 @@
 namespace align {
 
     // 读取参考序列，计算索引，生成共识序列
-    RefAligner::RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path,
-                           int kmer_size, int window_size,
-                                                     int sketch_size, int sketch_kmer_size, bool noncanonical,
-                           int threads, std::string msa_cmd,
-                           bool keep_length,
-                           bool enable_wfa)
+        RefAligner::RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path,
+                                                     int kmer_size, int window_size,
+                                                                                                         int sketch_size, int sketch_kmer_size, bool noncanonical,
+                                                     int threads, std::string msa_cmd,
+                                                     bool keep_length,
+                                                     bool enable_wfa,
+                                                     const FilePath& ref_aligned_path)
         : work_dir(work_dir),
           kmer_size(kmer_size),
           window_size(window_size),
@@ -52,14 +53,23 @@ namespace align {
         }
 
         // 设置共识序列生成的文件路径
-        const FilePath consensus_unaligned_file = ref_fasta_path;
+        const bool has_prealigned_ref = !ref_aligned_path.empty();
+        const FilePath consensus_unaligned_file = has_prealigned_ref ? ref_aligned_path : ref_fasta_path;
         const FilePath consensus_aligned_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_ALIGNED;
         const FilePath consensus_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_FASTA;
         const FilePath consensus_json_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_JSON;
 
         // 执行 MSA 并生成共识序列
+        // 说明：
+        // - 默认路径：对 -r/--ref 提供的原始 FASTA 重新做一次 MSA，再从对齐结果生成共识；
+        // - 若用户同时提供 --ref-align，则说明这个参考集合已经有现成的 MSA，
+        //   这里直接复用该 MSA，避免重复对齐，从而节省时间并保持参考坐标不变。
         constexpr std::size_t consensus_batch_size = 4096;
-        alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, this->msa_cmd, threads);
+        if (has_prealigned_ref) {
+            file_io::copyFile(consensus_unaligned_file, consensus_aligned_file);
+        } else {
+            alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, this->msa_cmd, threads);
+        }
         std::string consensus_string = consensus::generateConsensusSequence(
             consensus_aligned_file, consensus_file, consensus_json_file,
             0, threads, consensus_batch_size);
@@ -93,7 +103,8 @@ namespace align {
             opt.threads,
             opt.msa_cmd,
             opt.keep_length,
-            opt.wfa)
+            opt.wfa,
+            FilePath(opt.ref_align_path))
     {
     }
 

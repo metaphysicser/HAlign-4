@@ -1,5 +1,7 @@
 #include <doctest/doctest.h>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <random>
 #include <string>
 #include <vector>
@@ -210,6 +212,19 @@ static std::string cigarToString(const cigar::Cigar_t& cigar) {
         result += std::to_string(len) + op;
     }
     return result;
+}
+
+// ------------------------------------------------------------------
+// 辅助函数：写一个最小 FASTA 文件，供 CLI 解析与文件存在性校验使用。
+// 说明：这里只需要“可被 ExistingFile 接受”的真实文件，不需要复杂内容。
+// ------------------------------------------------------------------
+static std::filesystem::path writeMiniFasta(const std::filesystem::path& p, const std::string& name) {
+    std::ofstream ofs(p, std::ios::binary);
+    REQUIRE_MESSAGE(ofs.good(), "cannot create fasta: " << p.string());
+    ofs << ">" << name << "\n";
+    ofs << "ACGTACGT\n";
+    ofs.flush();
+    return p;
 }
 
 // ------------------------------------------------------------------
@@ -490,6 +505,44 @@ TEST_SUITE("align") {
             CHECK(op == 'D');
             CHECK(len == 3);
         }
+    }
+
+    TEST_CASE("CLI setup - parse --ref-align") {
+        namespace fs = std::filesystem;
+
+        const fs::path dir = fs::current_path() / "halign4_tests_cli_ref_align";
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir, ec);
+        REQUIRE_MESSAGE(!ec, "cannot create temp dir: " << dir.string() << " (" << ec.message() << ")");
+
+        const fs::path input = writeMiniFasta(dir / "input.fasta", "input");
+        const fs::path ref = writeMiniFasta(dir / "ref.fasta", "ref");
+        const fs::path ref_align = writeMiniFasta(dir / "ref_aligned.fasta", "ref_aligned");
+        const fs::path output = dir / "out.fasta";
+
+        Options opt;
+        CLI::App app{"halign4"};
+        setupCli(app, opt);
+
+        std::vector<std::string> args = {
+            "halign4",
+            "-i", input.string(),
+            "-o", output.string(),
+            "-r", ref.string(),
+            "--ref-align", ref_align.string()
+        };
+        std::vector<char*> argv;
+        argv.reserve(args.size());
+        for (auto& s : args) {
+            argv.push_back(s.data());
+        }
+
+        REQUIRE_NOTHROW(app.parse(static_cast<int>(argv.size()), argv.data()));
+        CHECK(opt.center_path == ref.string());
+        CHECK(opt.ref_align_path == ref_align.string());
+
+        fs::remove_all(dir, ec);
     }
 }
 

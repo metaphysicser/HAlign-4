@@ -187,7 +187,8 @@ namespace align {
                    bool noncanonical = true,
                    int threads = 1, std::string msa_cmd = "",
                    bool keep_length = false,
-                   bool enable_wfa = false);
+                   bool enable_wfa = false,
+                   const FilePath& ref_aligned_path = FilePath());
 
         // Options 构造（推荐）
         RefAligner(const Options& opt, const FilePath& ref_fasta_path);

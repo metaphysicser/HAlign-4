@@ -79,11 +79,29 @@ Sketch size used by Mash/MinHash-related components.
 
 - Default: `2000`
 
-#### `-c, --center-path <path>`
+#### `-r, --ref <path>`
 Provide an explicit center/reference sequence file (FASTA).
 
 - If provided, the program will use these sequences as the reference/center set instead of auto-selecting.
 - Validation: must exist (`CLI::ExistingFile`)
+
+#### `--ref-align <path>`
+Provide the **pre-aligned MSA** corresponding to `-r/--ref`.
+
+- This option is useful when your reference set has already been aligned and you do **not** want HAlign-4 to run the external MSA step again.
+- Validation: must exist (`CLI::ExistingFile`)
+- Relationship: this flag is intended to be used together with `-r/--ref`.
+
+Example:
+
+```bash
+./build/halign4 \
+  -i test/data/covid-test.fasta.gz \
+  -o covid.out.fasta \
+  -w covid.work \
+  -r test/data/covid-ref.fasta.gz \
+  --ref-align test/data/covid-ref.aligned.fasta
+```
 
 #### `-p, --msa-cmd <string>`
 MSA command **keyword** or **command template string**.
@@ -128,16 +146,16 @@ Security note:
 - The command is executed via the system shell. Treat template inputs as trusted data.
 
 #### `--keep-length`
-Keep reference sequences in `-c/--center-path` ungapped in the final MSA.
+Keep reference sequences in `-r/--ref` ungapped in the final MSA.
 
 - Source-level meaning (matches `RefAligner` implementation):
   - When set, the pipeline removes alignment columns that would introduce gaps into the reference sequences.
-- When `-c` contains multiple reference sequences:
+- When `-r` contains multiple reference sequences:
   - **all** reference sequences are guaranteed to have no inserted gaps.
 
 > Important clarification
 >
-> This flag is about **reference sequences from `-c`** (the "center/reference FASTA"), not about general query sequences.
+> This flag is about **reference sequences from `-r`** (the "center/reference FASTA"), not about general query sequences.
 
 
 #### `--save-workdir`
@@ -175,7 +193,7 @@ If you don’t have `mafft` installed, either install it or switch the template 
 
 ---
 
-### Example 2: COVID dataset + demonstrate `-c`, `--keep-length`
+### Example 2: COVID dataset + demonstrate `-r`, `--keep-length`
 
 Dataset:
 
@@ -195,7 +213,7 @@ Background:
   -i test/data/covid-test.fasta.gz \
   -o covid.out.fasta \
   -w covid.work \
-  -c test/data/covid-ref.fasta.gz \
+  -r test/data/covid-ref.fasta.gz \
   --keep-length
 ```
 

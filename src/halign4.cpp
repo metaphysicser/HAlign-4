@@ -14,6 +14,12 @@ static void checkOption(Options& opt) {
     if (!opt.center_path.empty()) {
         file_io::requireRegularFile(opt.center_path, "center_path");
     }
+    if (!opt.ref_align_path.empty()) {
+        file_io::requireRegularFile(opt.ref_align_path, "ref_align_path");
+        if (opt.center_path.empty()) {
+            throw std::runtime_error("--ref-align requires -r/--ref to be provided as the matching reference FASTA");
+        }
+    }
 
     // 数值校验
     if (opt.threads <= 0) throw std::runtime_error("threads must be > 0");
@@ -110,8 +116,13 @@ int main(int argc, char** argv) {
         // 快速路径：序列数 <= cons_n 且不保留长度时直接输出
         if (preproc_count <= opt.cons_n && opt.keep_length == false)
         {
-            alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, opt.msa_cmd, opt.threads);
-            file_io::copyFile(consensus_aligned_file, FilePath(opt.output));
+            if (!opt.ref_align_path.empty()) {
+                spdlog::info("Using pre-aligned reference MSA directly: {}", opt.ref_align_path);
+                file_io::copyFile(FilePath(opt.ref_align_path), FilePath(opt.output));
+            } else {
+                alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, opt.msa_cmd, opt.threads);
+                file_io::copyFile(consensus_aligned_file, FilePath(opt.output));
+            }
             spdlog::info("All sequences processed; final output written to {}", opt.output);
 
             cleanupWorkdir(opt);
