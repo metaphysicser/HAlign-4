@@ -770,7 +770,7 @@ float psw_gg3_sse_pp(void *km, int qlen, const psw_prof_t *query,
 	int16_t *go_q = 0, *ge_q = 0, *go_t = 0, *ge_t = 0, *go_ge_q = 0, *go_ge_t = 0;
 	psw_prof_t query_n = { 0, 0, 0, 0 }, target_n = { 0, 0, 0, 0 };
 	const psw_prof_t *q_use, *t_use;
-	int32_t r, n_col, *off = 0;
+	int32_t r, n_col, *off = 0, *off_end = 0;
 	int32_t score32 = INT32_MIN;
 	int32_t H0 = 0, last_H0_t = 0;
 	uint8_t *z = 0;
@@ -800,6 +800,11 @@ float psw_gg3_sse_pp(void *km, int qlen, const psw_prof_t *query,
 	t_use = &target_n;
 
 	if (w < 0) w = tlen > qlen ? tlen : qlen;
+	else {
+		int diff = tlen > qlen ? tlen - qlen : qlen - tlen;
+		/* For global alignment, the terminal cell must be inside the band. */
+		if (w < diff) w = diff;
+	}
 	n_col = w + 1 < tlen ? w + 1 : tlen;
 
 	do {
@@ -849,8 +854,9 @@ float psw_gg3_sse_pp(void *km, int qlen, const psw_prof_t *query,
 		if (m_cigar_ && n_cigar_ && cigar_) {
 			*n_cigar_ = 0;
 			z = (uint8_t *)kcalloc(km, (size_t)(qlen + tlen) * n_col, 1);
-			off = (int32_t *)kmalloc(km, (size_t)(qlen + tlen) * sizeof(int32_t));
+			off = (int32_t *)kmalloc(km, (size_t)(qlen + tlen) * 2 * sizeof(int32_t));
 			if (z == 0 || off == 0) { failed = 1; break; }
+			off_end = off + (qlen + tlen);
 		}
 
 		if (qlen == 0 || tlen == 0) {
@@ -897,7 +903,10 @@ float psw_gg3_sse_pp(void *km, int qlen, const psw_prof_t *query,
 				sv.y16[r] = -go_q[0] - ge_q[0];
 				sv.u16[r] = r ? -ge_t[r] : -go_t[r] - ge_t[r];
 			}
-			if (z) off[r] = st0;
+			if (z) {
+				off[r] = st0;
+				off_end[r] = en0;
+			}
 			psw_sse_core_pp((int)r, (int)st0, (int)en0, (int)st, (int)en, &sv, z ? z + (size_t)r * n_col : 0,
 											go_t, go_q, qlen, tlen, m, scale_shift, qp, tf, go_ge_q, go_ge_t, x1, v1, igapo, igape);
 
@@ -918,7 +927,7 @@ float psw_gg3_sse_pp(void *km, int qlen, const psw_prof_t *query,
 		}
 		score32 = H0;
 		if (z && off)
-			psw_backtrack(km, 1, 0, 0, z, off, 0, n_col, tlen - 1, qlen - 1, m_cigar_, n_cigar_, cigar_);
+			psw_backtrack(km, 1, 0, 0, z, off, off_end, n_col, tlen - 1, qlen - 1, m_cigar_, n_cigar_, cigar_);
 	} while (0);
 
 	if (failed) score32 = INT32_MIN;
@@ -950,7 +959,7 @@ float psw_gg3_sse_ps(void *km, int qlen, const uint8_t *query,
 	int16_t *tp = 0, *tbf = 0, *go_t = 0, *ge_t = 0, *go_ge_t = 0;
 	psw_prof_t target_n = { 0, 0, 0, 0 };
 	const psw_prof_t *t_use;
-	int32_t r, n_col, *off = 0;
+	int32_t r, n_col, *off = 0, *off_end = 0;
 	int32_t score32 = INT32_MIN;
 	int32_t H0 = 0, last_H0_t = 0;
 	uint8_t *z = 0;
@@ -979,7 +988,14 @@ float psw_gg3_sse_ps(void *km, int qlen, const uint8_t *query,
 	t_use = &target_n;
 
 	if (w < 0) w = tlen > qlen ? tlen : qlen;
+	else {
+		int diff = tlen > qlen ? tlen - qlen : qlen - tlen;
+		/* For global alignment, the terminal cell must be inside the band. */
+		if (w < diff) w = diff;
+	}
 	n_col = w + 1 < tlen ? w + 1 : tlen;
+	int32_t n_col_ = (n_col + 15) / 16 + 1;
+	n_col = n_col_ * 16;
 
 	do {
 		tp = psw_gen_tp_i16(km, tlen, t_use, m, mat);
@@ -1013,8 +1029,9 @@ float psw_gg3_sse_ps(void *km, int qlen, const uint8_t *query,
 		if (m_cigar_ && n_cigar_ && cigar_) {
 			*n_cigar_ = 0;
 			z = (uint8_t *)kcalloc(km, (size_t)(qlen + tlen) * n_col, 1);
-			off = (int32_t *)kmalloc(km, (size_t)(qlen + tlen) * sizeof(int32_t));
+			off = (int32_t *)kmalloc(km, (size_t)(qlen + tlen) * 2 * sizeof(int32_t));
 			if (z == 0 || off == 0) { failed = 1; break; }
+			off_end = off + (qlen + tlen);
 		}
 
 		if (qlen == 0 || tlen == 0) {
@@ -1061,7 +1078,10 @@ float psw_gg3_sse_ps(void *km, int qlen, const uint8_t *query,
 				sv.y16[r] = -go_q - ge_q;
 				sv.u16[r] = r ? -ge_t[r] : -go_t[r] - ge_t[r];
 			}
-			if (z) off[r] = st0;
+			if (z) {
+				off[r] = st0;
+				off_end[r] = en0;
+			}
 			psw_sse_core_ps((int)r, (int)st0, (int)en0, (int)st, (int)en, &sv, z ? z + (size_t)r * n_col : 0,
 											go_q, ge_q, go_t, go_ge_t, qlen, tlen, query, tp, x1, v1);
 
@@ -1080,7 +1100,7 @@ float psw_gg3_sse_ps(void *km, int qlen, const uint8_t *query,
 		}
 		score32 = H0;
 		if (z && off)
-			psw_backtrack(km, 1, 0, 0, z, off, 0, n_col, tlen - 1, qlen - 1, m_cigar_, n_cigar_, cigar_);
+			psw_backtrack(km, 1, 0, 0, z, off, off_end, n_col, tlen - 1, qlen - 1, m_cigar_, n_cigar_, cigar_);
 	} while (0);
 
 	if (failed) score32 = INT32_MIN;

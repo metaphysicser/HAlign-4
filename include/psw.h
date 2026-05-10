@@ -214,15 +214,25 @@ static inline void psw_backtrack(void *km, int is_rot, int is_rev, int min_intro
 
 	while (i >= 0 && j >= 0) {
 		int force_state = -1;
+		int idx;
+
 		if (is_rot) {
 			r = i + j;
-			if (i < off[r]) force_state = 2;
-			if (off_end && i > off_end[r]) force_state = 1;
-			tmp = force_state < 0 ? p[(size_t)r * n_col + i - off[r]] : 0;
+			if (i < off[r]) force_state = 2;                 /* left/outside band: insertion */
+			if (off_end && i > off_end[r]) force_state = 1;  /* right/outside band: deletion */
+			idx = i - off[r];
+			/* Defensive bound check: if off_end is missing or inconsistent, do not index p[] out of row. */
+			if (force_state < 0 && idx >= n_col) force_state = 1;
+			if (force_state < 0 && idx < 0) force_state = 2;
+			tmp = force_state < 0 ? p[(size_t)r * n_col + idx] : 0;
 		} else {
 			if (j < off[i]) force_state = 2;
 			if (off_end && j > off_end[i]) force_state = 1;
-			tmp = force_state < 0 ? p[(size_t)i * n_col + j - off[i]] : 0;
+			idx = j - off[i];
+			/* Defensive bound check: if off_end is missing or inconsistent, do not index p[] out of row. */
+			if (force_state < 0 && idx >= n_col) force_state = 1;
+			if (force_state < 0 && idx < 0) force_state = 2;
+			tmp = force_state < 0 ? p[(size_t)i * n_col + idx] : 0;
 		}
 
 		if (state == 0) state = tmp & 7;

@@ -193,7 +193,7 @@ struct Options {
 	int kmer_size = 19;         // --kmer-size：用于归类/聚类的 k-mer 大小（后续步骤使用）
 	int kmer_window = 19;       // --kmer-window：minimizer 窗口大小 w（以 k-mer 为单位）
 	int cons_n = 1000;          // --cons-n：挑选用于共识计算的序列数量（Top-K by length）
-	int sketch_size = 30000;     // --sketch-size：用于 sketch 的大小（默认 30000）
+	int sketch_size = 3000;     // --sketch-size：用于 sketch 的大小（默认 3000）
     // 说明：将 sketch 的 k-mer 大小与 minimizer 的 k-mer 大小解耦。
     // - kmer_size 仍用于 minimizer/锚点；
     // - sketch_kmer_size 仅用于 mash::sketchFromSequence，默认 21。
@@ -325,9 +325,9 @@ static void setupCli(CLI::App& app, Options& opt) {
         ->check(CLI::Range(1, 1000000));
 
     // --sketch-size：sketch（minhash）大小。
-    // 说明：越大越稳健但更慢/更占内存；一般默认 2000 足够。
+    // 说明：越大越稳健但更慢/更占内存；一般默认 3000 足够。
     app.add_option("--sketch-size", opt.sketch_size, "Sketch size (minhash count).")
-        ->default_val(30000)
+        ->default_val(3000)
         ->check(CLI::Range(1, 10000000));
 
     // --sketch-kmer-size：仅用于 sketch 构建的 k-mer 大小。

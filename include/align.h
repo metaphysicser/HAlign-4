@@ -51,7 +51,7 @@ namespace align {
     using SeedHits = std::vector<SeedHit>;
     static constexpr seed::SeedKind kSeedKind = seed::SeedKind::minimizer;
 
-    typedef struct ProfileMatrix{
+    struct ProfileMatrix{
         int len;
         int dim;
         int depth;              /* profile 总序列数 */
