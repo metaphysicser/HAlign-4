@@ -63,6 +63,25 @@ namespace seq_io
         else dst.clear();
     }
 
+    // 构建完整 FASTA/FASTQ header。
+    // kseq 会把 header 的第一个空白前内容放在 name，后面的注释放在 comment。
+    // 为避免只保存 name 造成大量重复 header，这里把 name + comment 合并保存。
+    static void assignKseqFullHeader(std::string& dst, const kstring_t& name, const kstring_t& comment)
+    {
+        dst.clear();
+
+        if (name.s && name.l > 0) {
+            dst.assign(name.s, name.l);
+        }
+
+        if (comment.s && comment.l > 0) {
+            if (!dst.empty()) {
+                dst.push_back(' ');
+            }
+            dst.append(comment.s, comment.l);
+        }
+    }
+
     // KseqReader 构造函数
     KseqReader::KseqReader(const FilePath& file_path)
         : impl_(std::make_unique<Impl>())
@@ -140,9 +159,17 @@ namespace seq_io
         const int ret = kseq_read(impl_->seq);
 
         if (ret >= 0) {
-            assignKstring(rec.id,   impl_->seq->name);
-            assignKstring(rec.desc, impl_->seq->comment);
-            assignKstring(rec.seq,  impl_->seq->seq);
+            // 保存完整 header，而不是只保存 kseq 的 name 字段。
+            // 原始 header: >name comment
+            // kseq 拆分为: name=name, comment=comment
+            // 这里将二者合并到 rec.id 中，保证后续只使用 rec.id 的流程也不会丢失注释部分。
+            assignKseqFullHeader(rec.id, impl_->seq->name, impl_->seq->comment);
+
+            // comment 已经合并进 rec.id。清空 rec.desc，避免 SeqWriter::writeFasta 再次追加，
+            // 导致输出 header 变成 ">name comment comment"。
+            rec.desc.clear();
+
+            assignKstring(rec.seq, impl_->seq->seq);
             rec.n_num = 0;
             return true;
         }
