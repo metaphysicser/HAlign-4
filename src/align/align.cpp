@@ -257,11 +257,10 @@ namespace align
     // - 用锚点拆分为多个片段，逐段全局比对，最后合并
     cigar::Cigar_t globalAlignSeq2Seq(const std::string& ref,
                                       const std::string& query,
-                                      const anchor::Anchors& anchors)
+                                      const anchor::Anchors& anchors,
+                                      align::AlignConfig cfg)
     {
-        align::AlignConfig cfg;
-        align::AlignConfig first_cfg;
-        first_cfg.flag = KSW_EZ_GENERIC_SC;
+        align::AlignConfig first_cfg = cfg;
 
         const std::size_t ref_len = ref.size();
         const std::size_t qry_len = query.size();
@@ -271,7 +270,7 @@ namespace align
         anchor::ChainParams chain_params = anchor::default_chain_params();
         anchor::Anchors chain_anchors = anchor::chainAnchors(sorted_anchors, chain_params);
         if (chain_anchors.empty()) {
-            return globalAlignKSW2(ref, query);
+            return globalAlignKSW2(ref, query, cfg);
         }
 
         // 按 query 坐标排序
@@ -367,7 +366,7 @@ namespace align
         if (total_ref != ref_len || total_qry != qry_len) {
             spdlog::error("globalAlignSeq2Seq: final cigar mismatch (ref:{}/{}, qry:{}/{}), fallback to global",
                          total_ref, ref_len, total_qry, qry_len);
-            return globalAlignKSW2(ref, query);
+            return globalAlignKSW2(ref, query, cfg);
         }
 
         return result;
@@ -376,11 +375,10 @@ namespace align
     cigar::Cigar_t globalAlignSeq2Profile(const ProfileMatrix& ref,
                                 const std::string& ref_string,
                               const std::string& query,
-                              const anchor::Anchors& anchors)
+                              const anchor::Anchors& anchors,
+                              align::AlignConfig cfg)
     {
-        align::AlignConfig cfg;
-        align::AlignConfig first_cfg;
-        first_cfg.flag = KSW_EZ_GENERIC_SC;
+        align::AlignConfig first_cfg = cfg;
 
         const std::size_t ref_len = ref_string.size();
         const std::size_t qry_len = query.size();
@@ -535,11 +533,10 @@ namespace align
                                                const std::string& ref_string,
                                                const std::string& query,
                                                const anchor::Anchors& anchors,
-                                               int thread)
+                                               int thread,
+                                               align::AlignConfig cfg)
     {
-        align::AlignConfig cfg;
-        align::AlignConfig first_cfg;
-        first_cfg.flag = KSW_EZ_GENERIC_SC;
+        align::AlignConfig first_cfg = cfg;
 
         const std::size_t ref_len = ref_string.size();
         const std::size_t qry_len = query.size();

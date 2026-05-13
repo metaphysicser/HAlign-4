@@ -171,18 +171,21 @@ namespace align {
     // 基于锚点的分段全局比对；锚点无效时退化为普通全局比对
     cigar::Cigar_t globalAlignSeq2Seq(const std::string& ref,
                                       const std::string& query,
-                                      const anchor::Anchors& anchors);
+                                      const anchor::Anchors& anchors,
+                                      align::AlignConfig cfg = align::AlignConfig{});
 
     cigar::Cigar_t globalAlignSeq2Profile(const ProfileMatrix& ref,
                                     const std::string& ref_string,
                                   const std::string& query,
-                                  const anchor::Anchors& anchors);
+                                  const anchor::Anchors& anchors,
+                                  align::AlignConfig cfg = align::AlignConfig{});
 
     cigar::Cigar_t globalAlignSeq2ProfileParallel(const ProfileMatrix& ref,
                                     const std::string& ref_string,
                                   const std::string& query,
                                   const anchor::Anchors& anchors,
-                                  int thread = 1);
+                                  int thread = 1,
+                                  align::AlignConfig cfg = align::AlignConfig{});
 
 
     // 参考序列比对器：批量比对 query，并合并生成最终 MSA
@@ -197,7 +200,10 @@ namespace align {
                    int threads = 1, std::string msa_cmd = "",
                    bool keep_length = false,
                    bool enable_wfa = false,
-                   const FilePath& ref_aligned_path = FilePath());
+                   const FilePath& ref_aligned_path = FilePath(),
+                   std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX,
+                   int gap_open = 10,
+                   int gap_extend = 2);
 
         // Options 构造（推荐）
         RefAligner(const Options& opt, const FilePath& ref_fasta_path);
@@ -317,6 +323,7 @@ namespace align {
             std::unordered_map<std::string, cigar::Cigar_t>& out_ref_aligned_map,
             std::vector<bool>& out_ref_gap_pos) const;
 
+        AlignConfig makeAlignConfig() const;
 
         // 私有成员
 
@@ -349,6 +356,9 @@ namespace align {
 
         bool keep_length = false; // true：裁剪“共识为 gap”的列
         bool enable_wfa = false;  // true：允许使用 WFA 路径
+        std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX;
+        int gap_open = 10;
+        int gap_extend = 2;
 
         // 是否考虑反向互补
         bool noncanonical = true;

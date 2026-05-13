@@ -57,6 +57,8 @@ The most important parameters are:
 - `-p/--msa-cmd`: MSA method (keyword: `minipoa`/`mafft`/`clustalo`, or a custom template)
 - `-r/--ref`: provide a reference/center FASTA (optional)
 - `--align-ref`: provide the pre-aligned MSA for the `-r/--ref` reference set
+- `-s/--score`: provide a DNA5 scoring matrix file (see `score.example.tsv`)
+- `--gap-open`, `--gap-extend`: control gap open/extension penalties
 - `--keep-length`: keep reference length coordinate rules
 
 For the full parameter list and detailed examples, see [`docs/usage.md`](docs/usage.md).

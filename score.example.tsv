@@ -1,0 +1,12 @@
+# HAlign-4 DNA5 scoring matrix example.
+# Order is A C G T N for both rows and columns.
+# You can pass this file with: -s score.example.tsv
+#
+# Values must fit in signed int8 [-128, 127].
+# Row labels and the header row are optional; comments start with '#'.
+    A   C   G   T   N
+A   4  -2   1  -2   0
+C  -2   4  -2   1   0
+G   1  -2   4  -2   0
+T  -2   1  -2   4   0
+N   0   0   0   0   0

@@ -103,6 +103,32 @@ Example:
   --ref-align test/data/covid-ref.aligned.fasta
 ```
 
+#### `-s, --score <path>`
+Provide a DNA5 scoring matrix file for reference alignment.
+
+- Internal base order is `A C G T N` for both rows and columns.
+- The file may contain exactly 25 numeric scores, or a header/row labels like `score.example.tsv`.
+- Scores must fit signed int8 range `[-128, 127]`.
+- Comments start with `#`; commas are accepted as separators.
+
+Example:
+
+```bash
+./build/halign4 \
+  -i input.fasta \
+  -o aligned.fasta \
+  -s score.example.tsv \
+  --gap-open 10 \
+  --gap-extend 2
+```
+
+#### `--gap-open <int>`, `--gap-extend <int>`
+Set affine gap penalties used by reference alignment.
+
+- `--gap-open` default: `10`
+- `--gap-extend` default: `2`
+- Both values must be in `[0, 127]`.
+
 #### `-p, --msa-cmd <string>`
 MSA command **keyword** or **command template string**.
 

@@ -5,6 +5,11 @@
 
 #include "align.h"
 
+#include <cerrno>
+#include <cctype>
+#include <cstdlib>
+#include <fstream>
+
 // 程序入口：命令行解析 -> 预处理 -> 共识对齐 -> 序列比对 -> 结果合并 -> 清理工作目录
 
 // 参数校验与工作目录准备
@@ -22,6 +27,10 @@ static void checkOption(Options& opt) {
         // 验证 -r 和 --ref-align 的序列一致性（删除 gap 后）
         validateRefAlignedConsistency(FilePath(opt.ref_path), FilePath(opt.ref_align_path));
     }
+    if (!opt.score_path.empty()) {
+        file_io::requireRegularFile(opt.score_path, "score");
+        opt.score_matrix = readScoreMatrixFile(opt.score_path);
+    }
 
     // 数值校验
     if (opt.threads <= 0) throw std::runtime_error("threads must be > 0");
@@ -29,6 +38,8 @@ static void checkOption(Options& opt) {
     if (opt.sketch_kmer_size <= 0) throw std::runtime_error("sketch_kmer_size must be > 0");
     if (opt.kmer_window <= 0) throw std::runtime_error("kmer_window must be > 0");
     if (opt.cons_n <= 0) throw std::runtime_error("cons_n must be > 0");
+    if (opt.gap_open < 0 || opt.gap_open > 127) throw std::runtime_error("gap_open must be in [0, 127]");
+    if (opt.gap_extend < 0 || opt.gap_extend > 127) throw std::runtime_error("gap_extend must be in [0, 127]");
     if (opt.kmer_size > 31) throw std::runtime_error("kmer_size too large (must be <= 31)");
     if (opt.sketch_kmer_size > 31) throw std::runtime_error("sketch_kmer_size too large (must be <= 31)");
     if (opt.kmer_window >= 256) {

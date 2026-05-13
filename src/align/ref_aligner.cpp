@@ -23,7 +23,10 @@ namespace align {
                                                      int threads, std::string msa_cmd,
                                                      bool keep_length,
                                                      bool enable_wfa,
-                                                     const FilePath& ref_aligned_path)
+                                                     const FilePath& ref_aligned_path,
+                                                     std::array<int8_t, 25> score_matrix_in,
+                                                     int gap_open,
+                                                     int gap_extend)
         : work_dir(work_dir),
           kmer_size(kmer_size),
           window_size(window_size),
@@ -33,7 +36,10 @@ namespace align {
           threads(threads),
           msa_cmd(std::move(msa_cmd)),
           keep_length(keep_length),
-          enable_wfa(enable_wfa)
+          enable_wfa(enable_wfa),
+          score_matrix(score_matrix_in),
+          gap_open(gap_open),
+          gap_extend(gap_extend)
     {
         // 加载参考序列并构建 sketch/minimizer 索引
         seq_io::KseqReader reader(ref_fasta_path);
@@ -104,8 +110,20 @@ namespace align {
             opt.msa_cmd,
             opt.keep_length,
             opt.wfa,
-            FilePath(opt.ref_align_path))
+            FilePath(opt.ref_align_path),
+            opt.score_matrix,
+            opt.gap_open,
+            opt.gap_extend)
     {
+    }
+
+    AlignConfig RefAligner::makeAlignConfig() const
+    {
+        AlignConfig cfg;
+        cfg.mat = score_matrix.data();
+        cfg.gap_open = gap_open;
+        cfg.gap_extend = gap_extend;
+        return cfg;
     }
 
     // 全局比对：生成 minimizer 锚点，执行比对
@@ -132,7 +150,7 @@ namespace align {
         }
 
         const anchor::Anchors anchors = minimizer::collect_anchors(*ref_mz_ptr, *qry_mz_ptr);
-        cigar::Cigar_t result = globalAlignSeq2Seq(ref, query, anchors);
+        cigar::Cigar_t result = globalAlignSeq2Seq(ref, query, anchors, makeAlignConfig());
 
 #ifdef _DEBUG
         const std::size_t cigar_ref_len = cigar::getRefLength(result);
@@ -172,9 +190,9 @@ namespace align {
         const anchor::Anchors anchors = minimizer::collect_anchors(*ref_mz_ptr, *qry_mz_ptr);
             cigar::Cigar_t result;
         if (thread > 0){
-            result = globalAlignSeq2ProfileParallel(ref, ref_string, query, anchors, thread);
+            result = globalAlignSeq2ProfileParallel(ref, ref_string, query, anchors, thread, makeAlignConfig());
         } else {
-            result = globalAlignSeq2Profile(ref, ref_string, query, anchors);
+            result = globalAlignSeq2Profile(ref, ref_string, query, anchors, makeAlignConfig());
         }
 #ifdef _DEBUG
         const std::size_t cigar_ref_len = cigar::getRefLength(result);

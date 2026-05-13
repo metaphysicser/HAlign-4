@@ -15,32 +15,6 @@
 #include <unordered_set>
 #include <vector>
 
-// ==============================================================
-// 预处理模块（preprocess）头文件说明（详细中文注释）
-//
-// 本模块负责将用户输入的原始 FASTA（可以是本地路径或远程 URL）准备为后续分析的标准化数据，
-// 并为共识计算/比对准备必要的中间文件。主要职责包括：
-//  1) 将输入文件复制或下载到工作目录下的 `data/raw`；
-//  2) 逐条读取输入序列并做“清洗/规范化”（例如大写化、把非 A/C/G/T/U 替换为 N，去除非法字符等）；
-//  3) 将清洗后的序列写入 `data/clean`；
-//  4) 维护一个 Top-K 选择器（长度优先）来挑选用于构建共识的候选序列集合（写入 `consensus_unaligned.fasta`）；
-//  5) 返回处理的序列总数，供上层决定是否需要后续合并/更多处理。
-//
-// 重要语义与约定：
-// - `workdir`：调用方提供的工作目录路径；本模块会在该目录下创建必要的子目录（data/raw, data/clean 等），
-//   若目录不存在将尝试创建；如果要求为空（由上层传入并检查），则会在空目录中创建数据结构；
-// - I/O 行为：如果 `input_path` 是远程 URL（例如 http(s):// 或以 // 开头），本模块会下载到本地；
-//   否则会拷贝本地文件到工作目录。下载/拷贝失败会抛出异常（std::runtime_error）。
-// - 异常与错误处理：函数在遇到严重 I/O 或解析错误时会抛出异常（std::runtime_error）；上层应捕获并记录。
-// - 返回值：函数返回处理的记录数量（uint_t），若数量超过项目配置上限（config.hpp 中定义的 U_MAX），
-//   值会被截断为 U_MAX 并记录告警（调用者应注意）。
-//
-// 性能与并发注意事项：
-// - 该函数为 I/O 密集型：对大文件（GB 级）应关注磁盘带宽与缓冲（可通过 utils::seq_io 的 io 缓冲调优）；
-// - 在高并发环境下，不要并行调用本函数写入同一 `workdir`，以免出现竞态；若需并行，使用不同的工作目录或外部协调。
-//
-// ==============================================================
-
 // 预处理输入 FASTA，并返回处理的序列数量（total records processed）
 //
 // 参数：
@@ -112,5 +86,7 @@ void alignConsensusSequence(const FilePath& input_file, const FilePath& output_f
 //
 // ==============================================================
 void validateRefAlignedConsistency(const FilePath& ref_fasta, const FilePath& ref_aligned);
+
+std::array<int8_t, 25> readScoreMatrixFile(const std::string& path);
 
 #endif //HALIGN4_PREPROCESS_H

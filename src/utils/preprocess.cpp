@@ -435,3 +435,72 @@ void validateRefAlignedConsistency(const FilePath& ref_fasta, const FilePath& re
         ref_seqs.size()
     );
 }
+
+
+static bool isScoreMatrixLabel(std::string token) {
+    if (!token.empty() && token.back() == ':') {
+        token.pop_back();
+    }
+    if (token.size() != 1) {
+        return false;
+    }
+    const char c = static_cast<char>(std::toupper(static_cast<unsigned char>(token[0])));
+    return c == 'A' || c == 'C' || c == 'G' || c == 'T' || c == 'N';
+}
+
+std::array<int8_t, 25> readScoreMatrixFile(const std::string& path) {
+    std::ifstream in(path);
+    if (!in) {
+        throw std::runtime_error("failed to open score matrix file: " + path);
+    }
+
+    std::vector<int> values;
+    std::string line;
+    int line_no = 0;
+    while (std::getline(in, line)) {
+        ++line_no;
+        const std::size_t comment_pos = line.find('#');
+        if (comment_pos != std::string::npos) {
+            line.resize(comment_pos);
+        }
+        for (char& c : line) {
+            if (c == ',') {
+                c = ' ';
+            }
+        }
+
+        std::istringstream iss(line);
+        std::string token;
+        while (iss >> token) {
+            if (isScoreMatrixLabel(token)) {
+                continue;
+            }
+
+            char* end = nullptr;
+            errno = 0;
+            const long parsed = std::strtol(token.c_str(), &end, 10);
+            if (end == token.c_str() || *end != '\0' || errno == ERANGE) {
+                throw std::runtime_error(
+                    "invalid score matrix token '" + token + "' at " + path + ":" + std::to_string(line_no));
+            }
+            if (parsed < -128 || parsed > 127) {
+                throw std::runtime_error(
+                    "score matrix value out of int8 range at " + path + ":" + std::to_string(line_no));
+            }
+            values.push_back(static_cast<int>(parsed));
+        }
+    }
+
+    if (values.size() != 25) {
+        throw std::runtime_error(
+            "score matrix must contain exactly 25 numeric values for A/C/G/T/N; got " +
+            std::to_string(values.size()));
+    }
+
+    std::array<int8_t, 25> matrix{};
+    for (std::size_t i = 0; i < matrix.size(); ++i) {
+        matrix[i] = static_cast<int8_t>(values[i]);
+    }
+    return matrix;
+}
+

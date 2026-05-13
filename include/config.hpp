@@ -28,6 +28,7 @@
 #include "spdlog/async.h"                        // 异步日志支持
 
 #include <filesystem>
+#include <array>
 #include <sstream>
 #include <cinttypes>
 #include <random>
@@ -47,6 +48,15 @@ const std::string MAFFT_MSA_CMD = "mafft --thread {thread} --auto {input} > {out
 const std::string CLUSTALO_MSA_CMD = "clustalo -i {input} -o {output} --threads {thread}"; // Clustal Omega 多序列比对命令模板示例
 
 const std::string DEFAULT_MSA_CMD = MINIPOA_CMD; // 默认多序列比对命令模板
+
+// 默认 DNA5 打分矩阵（A/C/G/T/N），矩阵文件与内部顺序均使用该顺序。
+static constexpr std::array<int8_t, 25> DEFAULT_DNA5_SCORE_MATRIX = {
+     4, -2,  1, -2,  0,
+    -2,  4, -2,  1,  0,
+     1, -2,  4, -2,  0,
+    -2,  1, -2,  4,  0,
+     0,  0,  0,  0,  0
+};
 
 // ------------------------------------------------------------------
 // resolveMsaCmdTemplate：把用户在 -p/--msa-cmd 中输入的内容解析成“最终命令模板”。
@@ -201,6 +211,10 @@ struct Options {
 	int batch_size = 0;         // --batch-size：对齐批大小；0 表示按模式使用内置默认值
 	bool wfa = false;           // --wfa：启用 WFA 开关（默认关闭，保证现有行为不变）
 	bool seq2seq = false;       // --seq2seq：开启后使用 seq2seq 比对路径；默认使用 seq2profile
+    std::string score_path;     // -s/--score：可选 DNA5 打分矩阵文件路径
+    std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX;
+    int gap_open = 10;          // --gap-open：gap open 罚分
+    int gap_extend = 2;         // --gap-extend：gap extend 罚分
 
 	// keep length 相关开关：
 	// - keep_length：保持“第一条/中心序列”的长度不变（其余序列允许按对齐结果变化/填充），适用于只关心输出共识/中心序列长度的场景。
@@ -347,6 +361,20 @@ static void setupCli(CLI::App& app, Options& opt) {
         ->default_val(0)
         ->check(CLI::Range(0, 100000000));
 
+    app.add_option("-s,--score", opt.score_path,
+                   "DNA5 alignment scoring matrix file for A/C/G/T/N (25 signed int8 scores).")
+        ->check(CLI::ExistingFile);
+
+    app.add_option("--gap-open", opt.gap_open,
+                   "Gap open penalty used by reference alignment.")
+        ->default_val(10)
+        ->check(CLI::Range(0, 127));
+
+    app.add_option("--gap-extend", opt.gap_extend,
+                   "Gap extension penalty used by reference alignment.")
+        ->default_val(2)
+        ->check(CLI::Range(0, 127));
+
     // 开关参数：默认关闭，传入 --wfa 时设为 true
     app.add_flag("--wfa", opt.wfa,
         "Enable WFA alignment path (default: disabled).");
@@ -396,6 +424,9 @@ static void logParsedOptions(const Options& opt) {
         {"cons_n", std::to_string(opt.cons_n)},
         {"sketch_size", std::to_string(opt.sketch_size)},
         {"batch-size", std::to_string(opt.batch_size)},
+        {"score", toString(opt.score_path, valW)},
+        {"gap-open", std::to_string(opt.gap_open)},
+        {"gap-extend", std::to_string(opt.gap_extend)},
         {"wfa", boolToStr(opt.wfa)},
         {"seq2seq", boolToStr(opt.seq2seq)},
         {"keep-length", boolToStr(opt.keep_length)},
