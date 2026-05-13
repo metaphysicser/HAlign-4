@@ -102,20 +102,29 @@ namespace align {
     // TODO 增加用户自定义矩阵
     // DNA5 替换矩阵（A/C/G/T/N）：match=+5，mismatch=-4，涉及 N 为 0。
     // 该矩阵需配合 KSW_EZ_GENERIC_SC 使用。
-    static constexpr int8_t dna5_simd_mat[25] = {
-        // A   C   G   T   N
-        5, -4, -4, -4,  0,  // A (i=0)
-       -4,  5, -4, -4,  0,  // C (i=1)
-       -4, -4,  5, -4,  0,  // G (i=2)
-       -4, -4, -4,  5,  0,  // T (i=3)
-        0,  0,  0,  0,  0   // N (i=4)
+ //    static constexpr int8_t dna5_simd_mat[25] = {
+ //        // A   C   G   T   N
+ //        5, -4, -4, -4,  0,  // A (i=0)
+ //       -4,  5, -4, -4,  0,  // C (i=1)
+ //       -4, -4,  5, -4,  0,  // G (i=2)
+ //       -4, -4, -4,  5,  0,  // T (i=3)
+ //        0,  0,  0,  0,  0   // N (i=4)
+ // };
+     // mafft 风格
+	static constexpr int8_t dna5_simd_mat[25] = {
+		// A   C   G   T   N
+		 4, -2,  1, -2,  0,  // A (i=0)
+	    -2,  4, -2,  1,  0,  // C (i=1)
+	     1, -2,  4, -2,  0,  // G (i=2)
+	    -2,  1, -2,  4,  0,  // T (i=3)
+		 0,  0,  0,  0,  0   // N (i=4)
  };
 
     // KSW2 参数配置（默认值与当前实现一致）
     struct AlignConfig {
         const int8_t* mat = dna5_simd_mat;  // 5x5 替换矩阵（扁平化）
         int alphabet_size = 5;              // DNA5
-        int gap_open = 6;                   // gap open 罚分
+        int gap_open = 10;                   // gap open 罚分
         int gap_extend = 2;                 // gap extend 罚分
         int end_bonus = 0;                  // 末端奖励
         int zdrop = -1;                     // -1 表示默认/不启用
