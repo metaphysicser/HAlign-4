@@ -45,6 +45,11 @@ static void checkOption(Options& opt) {
     if (opt.kmer_window >= 256) {
         spdlog::warn("kmer_window >= 256 may be slow; current value: {}", opt.kmer_window);
     }
+	// --wfa只有在seq2seq模式才能开启
+	if (opt.wfa && !opt.seq2seq)
+	{
+		spdlog::error("--wfa can only be used with --seq2seq mode");
+	}
 
     // workdir 准备
 #ifdef _DEBUG

@@ -31,7 +31,7 @@ namespace align {
           kmer_size(kmer_size),
           window_size(window_size),
           sketch_size(sketch_size),
-                    sketch_kmer_size(sketch_kmer_size),
+		  sketch_kmer_size(sketch_kmer_size),
           noncanonical(noncanonical),
           threads(threads),
           msa_cmd(std::move(msa_cmd)),
