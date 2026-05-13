@@ -10,6 +10,9 @@
 #include "psw.h"
 #include <unordered_map>
 #include <filesystem>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include <functional>
@@ -64,18 +67,106 @@ namespace align {
         explicit ProfileMatrix(const std::string& seq) : len(static_cast<int>(seq.size())), dim(5), depth(seq.empty() ? 0 : 1), prof(static_cast<std::size_t>(len) * 5, 0U) {
             for (int i = 0; i < len; ++i) {
                 const char ch = seq[static_cast<std::size_t>(i)];
-                int idx = 4;
-                switch (ch) {
-                case 'A': case 'a': idx = 0; break;
-                case 'C': case 'c': idx = 1; break;
-                case 'G': case 'g': idx = 2; break;
-                case 'T': case 't': idx = 3; break;
-                case 'U': case 'u': idx = 3; break; // RNA/U 按 T 处理
-                case 'N': case 'n': idx = 4; break;
-                default: idx = 4; break;
-                }
+                const int idx = baseIndex(ch);
                 prof[static_cast<std::size_t>(i) * 5 + static_cast<std::size_t>(idx)] = 1U;
             }
+        }
+
+        explicit ProfileMatrix(const consensus::ConsensusJson& cj)
+            : ProfileMatrix(fromConsensusCounts(cj))
+        {
+        }
+
+        static int baseIndex(char ch)
+        {
+            switch (ch) {
+            case 'A': case 'a': return 0;
+            case 'C': case 'c': return 1;
+            case 'G': case 'g': return 2;
+            case 'T': case 't': return 3;
+            case 'U': case 'u': return 3; // RNA/U 按 T 处理
+            case 'N': case 'n': return 4;
+            default: return 4;
+            }
+        }
+
+        static bool isGap(char ch)
+        {
+            return ch == '-' || ch == '.';
+        }
+
+        // 从已对齐序列构建 profile：列坐标保持 MSA 坐标；gap 不进入 DNA5 计数，
+        // depth 仍记录参与统计的序列总数，使 gap-rich 列在 profile 中表现为低覆盖列。
+        static ProfileMatrix fromAlignedSequences(const std::vector<std::string>& aligned_sequences)
+        {
+            if (aligned_sequences.empty()) {
+                return ProfileMatrix();
+            }
+
+            const std::size_t aln_len = aligned_sequences.front().size();
+            if (aln_len > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+                throw std::runtime_error("ProfileMatrix::fromAlignedSequences: alignment is too long");
+            }
+            if (aligned_sequences.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+                throw std::runtime_error("ProfileMatrix::fromAlignedSequences: profile depth is too large");
+            }
+
+            ProfileMatrix pm;
+            pm.len = static_cast<int>(aln_len);
+            pm.dim = 5;
+            pm.depth = static_cast<int>(aligned_sequences.size());
+            pm.prof.assign(aln_len * static_cast<std::size_t>(pm.dim), 0U);
+
+            for (const std::string& seq : aligned_sequences) {
+                if (seq.size() != aln_len) {
+                    throw std::runtime_error("ProfileMatrix::fromAlignedSequences: alignment length mismatch");
+                }
+
+                for (std::size_t i = 0; i < aln_len; ++i) {
+                    const char ch = seq[i];
+                    if (isGap(ch)) {
+                        continue;
+                    }
+                    const std::size_t idx = static_cast<std::size_t>(baseIndex(ch));
+                    ++pm.prof[i * static_cast<std::size_t>(pm.dim) + idx];
+                }
+            }
+
+            return pm;
+        }
+
+        // 从 consensus 统计计数构建 profile，避免 RefAligner 重新扫描 MSA 文件。
+        // U 按 T 合并；gap 只通过 depth 与列总碱基数的差值体现，不占用额外维度。
+        static ProfileMatrix fromConsensusCounts(const consensus::ConsensusJson& cj)
+        {
+            if (cj.aln_len > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+                throw std::runtime_error("ProfileMatrix::fromConsensusCounts: alignment is too long");
+            }
+            if (cj.num_seqs > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+                throw std::runtime_error("ProfileMatrix::fromConsensusCounts: profile depth is too large");
+            }
+            if (cj.counts.size() != static_cast<std::size_t>(cj.aln_len)) {
+                throw std::runtime_error("ProfileMatrix::fromConsensusCounts: counts length mismatch");
+            }
+
+            ProfileMatrix pm;
+            pm.len = static_cast<int>(cj.aln_len);
+            pm.dim = 5;
+            pm.depth = static_cast<int>(cj.num_seqs);
+            pm.prof.assign(static_cast<std::size_t>(pm.len) * static_cast<std::size_t>(pm.dim), 0U);
+
+            for (std::size_t i = 0; i < cj.counts.size(); ++i) {
+                const consensus::SiteCount& sc = cj.counts[i];
+                const std::size_t off = i * static_cast<std::size_t>(pm.dim);
+                pm.prof[off + 0] = sc.a;
+                pm.prof[off + 1] = sc.c;
+                pm.prof[off + 2] = sc.g;
+                const std::uint64_t t_total = static_cast<std::uint64_t>(sc.t) + static_cast<std::uint64_t>(sc.u);
+                pm.prof[off + 3] = static_cast<std::uint32_t>(t_total);
+                pm.prof[off + 4] = sc.n;
+            }
+
+            return pm;
         }
     };
 
@@ -337,9 +428,11 @@ namespace align {
         std::vector<ProfileMatrix> ref_profile;    // 参考序列的碱基计数 profile（按列存储，便于向量化）
 
         // 共识序列与索引（构造时预计算，避免重复计算）
+        seq_io::SeqRecord consensus_gap_seq;
         seq_io::SeqRecord consensus_seq;
         mash::Sketch consensus_sketch;
         SeedHits consensus_minimizer;
+        SeedHits consensus_gap_minimizer;
         ProfileMatrix consensus_profile;
 
         // MinHash / minimizer 参数
@@ -356,6 +449,7 @@ namespace align {
 
         bool keep_length = false; // true：裁剪“共识为 gap”的列
         bool enable_wfa = false;  // true：允许使用 WFA 路径
+        bool profile_alignment_mode = false; // true：本轮 SAM 以 profile/带 gap 共识坐标为参考
         std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX;
         int gap_open = 10;
         int gap_extend = 2;

@@ -41,60 +41,67 @@ namespace align {
           gap_open(gap_open),
           gap_extend(gap_extend)
     {
-        // 加载参考序列并构建 sketch/minimizer 索引
-        seq_io::KseqReader reader(ref_fasta_path);
-        seq_io::SeqRecord rec;
-        while (reader.next(rec)) {
-            // 关键改动：sketch 使用独立的 sketch_kmer_size，
-            // minimizer 仍使用 kmer_size，保持锚点密度/行为不变。
-            auto sketch = mash::sketchFromSequence(rec.seq, sketch_kmer_size, sketch_size,
-                                                   noncanonical, random_seed);
-            auto minimizer = minimizer::extractMinimizer(rec.seq, kmer_size,
-                                                         window_size, noncanonical);
-            ref_profile.push_back(ProfileMatrix(rec.seq));
-            ref_sequences.push_back(std::move(rec));
-            ref_sketch.push_back(std::move(sketch));
-            ref_minimizers.push_back(std::move(minimizer));
+	        // 加载参考序列并构建 sketch/minimizer 索引
+	        seq_io::KseqReader reader(ref_fasta_path);
+	        seq_io::SeqRecord rec;
+        	spdlog::info("Loading reference sequences from {}", ref_fasta_path.string());
 
-        }
+	        while (reader.next(rec)) {
+	            // 关键改动：sketch 使用独立的 sketch_kmer_size，
+	            // minimizer 仍使用 kmer_size，保持锚点密度/行为不变。
+	            auto sketch = mash::sketchFromSequence(rec.seq, sketch_kmer_size, sketch_size,
+	                                                   noncanonical, random_seed);
+	            auto minimizer = minimizer::extractMinimizer(rec.seq, kmer_size,
+	                                                         window_size, noncanonical);
+	            ref_profile.push_back(ProfileMatrix(rec.seq));
+	            ref_sequences.push_back(std::move(rec));
+	            ref_sketch.push_back(std::move(sketch));
+	            ref_minimizers.push_back(std::move(minimizer));
 
-        // 设置共识序列生成的文件路径
-        const bool has_prealigned_ref = !ref_aligned_path.empty();
-        const FilePath consensus_unaligned_file = has_prealigned_ref ? ref_aligned_path : ref_fasta_path;
-        const FilePath consensus_aligned_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_ALIGNED;
-        const FilePath consensus_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_FASTA;
-        const FilePath consensus_json_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_JSON;
+	        }
+        	spdlog::info("Loaded {} reference sequences", ref_sequences.size());
 
-        // 执行 MSA 并生成共识序列
-        // 说明：
-        // - 默认路径：对 -r/--ref 提供的原始 FASTA 重新做一次 MSA，再从对齐结果生成共识；
-        // - 若用户同时提供 --ref-align，则说明这个参考集合已经有现成的 MSA，
-        //   这里直接复用该 MSA，避免重复对齐，从而节省时间并保持参考坐标不变。
-        constexpr std::size_t consensus_batch_size = 4096;
-        if (has_prealigned_ref) {
-            file_io::copyFile(consensus_unaligned_file, consensus_aligned_file);
-        } else {
-            alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, this->msa_cmd, threads);
-        }
-        std::string consensus_string = consensus::generateConsensusSequence(
-            consensus_aligned_file, consensus_file, consensus_json_file,
-            0, threads, consensus_batch_size);
+	        // 设置共识序列生成的文件路径
+	        const bool has_prealigned_ref = !ref_aligned_path.empty();
+	        const FilePath consensus_unaligned_file = has_prealigned_ref ? ref_aligned_path : ref_fasta_path;
+	        const FilePath consensus_aligned_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_ALIGNED;
+	        const FilePath consensus_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_FASTA;
+	        const FilePath consensus_json_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_JSON;
 
-        consensus_seq.id = "consensus";
-        consensus_seq.seq = std::move(consensus_string);
-        consensus_profile = ProfileMatrix(consensus_seq.seq);
+	        // 执行 MSA 并生成共识序列
+	        // 说明：
+	        // - 默认路径：对 -r/--ref 提供的原始 FASTA 重新做一次 MSA，再从对齐结果生成共识；
+	        // - 若用户同时提供 --ref-align，则说明这个参考集合已经有现成的 MSA，
+	        //   这里直接复用该 MSA，避免重复对齐，从而节省时间并保持参考坐标不变。
+	        constexpr std::size_t consensus_batch_size = 4096;
+	        if (has_prealigned_ref) {
+	            file_io::copyFile(consensus_unaligned_file, consensus_aligned_file);
+	        } else {
+	            alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, this->msa_cmd, threads);
+	        }
+	        consensus::ConsensusResult consensus_result = consensus::generateConsensusResult(
+	            consensus_aligned_file, consensus_file, consensus_json_file,
+	            0, threads, consensus_batch_size);
 
-        // 预计算共识序列的 sketch 和 minimizer，避免重复计算
-        consensus_sketch = mash::sketchFromSequence(
-            consensus_seq.seq,
-            static_cast<std::size_t>(sketch_kmer_size),
-            static_cast<std::size_t>(sketch_size),
-            noncanonical,
-            random_seed);
+	        consensus_gap_seq.id = "consensus";
+	        consensus_gap_seq.seq = std::move(consensus_result.gap_seq);
+	        consensus_seq.id = "consensus";
+	        consensus_seq.seq = std::move(consensus_result.seq);
+	        consensus_profile = ProfileMatrix::fromConsensusCounts(consensus_result.counts);
 
-        consensus_minimizer = minimizer::extractMinimizer(
-            consensus_seq.seq, kmer_size, window_size, noncanonical);
-    }
+	        // 预计算共识序列的 sketch 和 minimizer，避免重复计算
+	        consensus_sketch = mash::sketchFromSequence(
+	            consensus_seq.seq,
+	            static_cast<std::size_t>(sketch_kmer_size),
+	            static_cast<std::size_t>(sketch_size),
+	            noncanonical,
+	            random_seed);
+
+	        consensus_minimizer = minimizer::extractMinimizer(
+	            consensus_seq.seq, kmer_size, window_size, noncanonical);
+	        consensus_gap_minimizer = minimizer::extractMinimizer(
+	            consensus_gap_seq.seq, kmer_size, window_size, noncanonical);
+	    }
 
     // Options 配置委托构造
     RefAligner::RefAligner(const Options& opt, const FilePath& ref_fasta_path)
@@ -316,6 +323,7 @@ namespace align {
         // 选择最相似的参考序列
         align::ProfileMatrix best_ref_profile;
         seq_io::SeqRecord best_ref;
+        const SeedHits* best_ref_minimizer = nullptr;
         double best_jaccard = -1.0;
         std::size_t best_ref_idx = 0;
 
@@ -329,22 +337,24 @@ namespace align {
             }
             best_ref_profile = ref_profile[best_ref_idx];
             best_ref = ref_sequences[best_ref_idx];
+            best_ref_minimizer = &ref_minimizers[best_ref_idx];
         } else {
             best_ref_profile = consensus_profile;
-            best_ref = consensus_seq;
+            best_ref = consensus_gap_seq;
+            best_ref_minimizer = &consensus_gap_minimizer;
             best_jaccard = mash::jaccard(qsk, consensus_sketch);
         }
 
         // 执行全局比对
         cigar::Cigar_t initial_cigar = Seq2ProfileWithAnchor(
             best_ref_profile, best_ref.seq, q.seq, best_jaccard, thread,
-            &ref_minimizers[best_ref_idx], &query_minimizer);
+            best_ref_minimizer, &query_minimizer);
 
         // 单参考序列：直接使用初始比对结果
         if (ref_sequences.size() == 1) {
             // 记录“最终输出”的 CIGAR 和参考索引，便于批处理阶段复用/统计
             out_cigar = initial_cigar;
-            out_ref_idx = 0;
+            out_ref_idx = -1;
 
             if (cigar::hasInsertion(initial_cigar)) {
                 writeSamRecord(q, initial_cigar, consensus_seq.id, out_insertion);
@@ -370,7 +380,8 @@ namespace align {
         // 多参考序列 + 非 keep_length：有插入时与共识序列二次比对
         const double consensus_similarity = mash::jaccard(qsk, consensus_sketch);
         cigar::Cigar_t recheck_cigar = Seq2ProfileWithAnchor(
-            consensus_profile,consensus_seq.seq, q.seq, consensus_similarity, thread, &consensus_minimizer, &query_minimizer);
+            consensus_profile, consensus_gap_seq.seq, q.seq, consensus_similarity, thread,
+            &consensus_gap_minimizer, &query_minimizer);
 
         out_cigar = recheck_cigar;
         out_ref_idx = -1; // 使用共识作为最终参考，避免误解为某条原始参考序列索引
@@ -498,6 +509,8 @@ namespace align {
     // 批量比对 query 序列 - 并行处理，每线程独立输出
     void RefAligner::alignSeq2Seq(const FilePath& qry_fasta_path, std::size_t batch_size)
     {
+        profile_alignment_mode = false;
+
         // 参数检查和初始化
         if (ref_sequences.empty() || ref_sketch.empty()) {
             throw std::runtime_error("RefAligner::alignQueryToRef: reference sequence is empty");
@@ -612,6 +625,8 @@ namespace align {
 
     void RefAligner::alignSeq2Profile(const FilePath& qry_fasta_path, std::size_t batch_size)
     {
+        profile_alignment_mode = true;
+
         // 参数检查和初始化
         if (ref_sequences.empty() || ref_sketch.empty()) {
             throw std::runtime_error("RefAligner::alignQueryToRef: reference sequence is empty");

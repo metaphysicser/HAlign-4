@@ -246,6 +246,29 @@ struct Timer {
 // ------------------------------------------------------------------
 TEST_SUITE("align") {
 
+    TEST_CASE("ProfileMatrix - build from consensus counts keeps MSA columns") {
+        consensus::ConsensusJson cj;
+        cj.num_seqs = 3;
+        cj.aln_len = 2;
+        cj.counts.resize(2);
+        cj.counts[0].a = 2;
+        cj.counts[0].dash = 1;
+        cj.counts[1].c = 1;
+        cj.counts[1].u = 1;
+        cj.counts[1].n = 1;
+
+        align::ProfileMatrix profile = align::ProfileMatrix::fromConsensusCounts(cj);
+
+        CHECK(profile.len == 2);
+        CHECK(profile.dim == 5);
+        CHECK(profile.depth == 3);
+        CHECK(profile.prof[0] == 2);
+        CHECK(profile.prof[1] == 0);
+        CHECK(profile.prof[5 + 1] == 1);
+        CHECK(profile.prof[5 + 3] == 1);
+        CHECK(profile.prof[5 + 4] == 1);
+    }
+
     TEST_CASE("globalAlignKSW2 - 精确匹配") {
         std::string seq = "ACGTACGTACGT";
         auto cigar = align::globalAlignKSW2(seq, seq);

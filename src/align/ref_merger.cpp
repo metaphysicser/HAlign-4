@@ -23,7 +23,9 @@ namespace align {
         std::size_t line_width) const
     {
         seq_io::SeqWriter writer(fasta_path, line_width);
-        writer.writeFasta(consensus_seq);
+        const seq_io::SeqRecord& consensus_ref =
+            profile_alignment_mode ? consensus_gap_seq : consensus_seq;
+        writer.writeFasta(consensus_ref);
         writer.flush();
 
         std::size_t total_count = 1;
@@ -79,7 +81,7 @@ namespace align {
                     }
 
 #ifdef _DEBUG
-                    if (fasta_rec.seq.size() != consensus_seq.seq.size()) {
+                    if (fasta_rec.seq.size() != consensus_ref.seq.size()) {
                         spdlog::debug("mergeConsensusAndSamToFasta: projected length mismatch {}",
                                      fasta_rec.id);
                     }
