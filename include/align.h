@@ -95,12 +95,39 @@ namespace align {
             return ch == '-' || ch == '.';
         }
 
+        static ProfileMatrix fromAlignedSequence(const std::string& seq)
+        {
+            if (seq.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+                throw std::runtime_error("ProfileMatrix::fromAlignedSequence: alignment is too long");
+            }
+
+            ProfileMatrix pm;
+            pm.len = static_cast<int>(seq.size());
+            pm.dim = 5;
+            pm.depth = 1;
+            pm.prof.assign(seq.size() * static_cast<std::size_t>(pm.dim), 0U);
+
+            for (std::size_t i = 0; i < seq.size(); ++i) {
+                const char ch = seq[i];
+                if (isGap(ch)) {
+                    continue;
+                }
+                const std::size_t idx = static_cast<std::size_t>(baseIndex(ch));
+                ++pm.prof[i * static_cast<std::size_t>(pm.dim) + idx];
+            }
+
+            return pm;
+        }
+
         // 从已对齐序列构建 profile：列坐标保持 MSA 坐标；gap 不进入 DNA5 计数，
         // depth 仍记录参与统计的序列总数，使 gap-rich 列在 profile 中表现为低覆盖列。
         static ProfileMatrix fromAlignedSequences(const std::vector<std::string>& aligned_sequences)
         {
             if (aligned_sequences.empty()) {
                 return ProfileMatrix();
+            }
+            if (aligned_sequences.size() == 1) {
+                return fromAlignedSequence(aligned_sequences.front());
             }
 
             const std::size_t aln_len = aligned_sequences.front().size();
@@ -425,6 +452,7 @@ namespace align {
         // 参考序列与索引
         seq_io::SeqRecordMap ref_sequences;   // 参考序列集合
         mash::SketchMap ref_sketch;          // 每条参考序列的 MinHash sketch
+        mash::SketchBitsetIndex ref_sketch_bitset_index;
         ProfileMatrixMap ref_profile;    // 参考序列的碱基计数 profile（按列存储，便于向量化）
 
         // 共识序列与索引（构造时预计算，避免重复计算）

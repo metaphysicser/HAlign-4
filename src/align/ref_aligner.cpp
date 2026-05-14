@@ -17,6 +17,8 @@
 namespace align {
 
     namespace {
+        constexpr std::size_t kSketchBitsetRefThreshold = 10;
+
         std::string profileToGappedSequence(const ProfileMatrix& profile)
         {
             if (profile.len < 0 || profile.dim < 5) {
@@ -80,19 +82,49 @@ namespace align {
           gap_open(gap_open),
           gap_extend(gap_extend)
     {
-	        // 加载参考序列并构建 sketch/minimizer 索引
+	        // 加载参考序列，sketch 在读取完成后并行构建，避免串行 I/O 循环承担重计算。
 	        seq_io::KseqReader reader(ref_fasta_path);
 	        seq_io::SeqRecord rec;
         	spdlog::info("Loading reference sequences from {}", ref_fasta_path.string());
 
+            std::vector<seq_io::SeqRecord> ref_records;
 	        while (reader.next(rec)) {
-	            // 关键改动：sketch 使用独立的 sketch_kmer_size，
-	            // minimizer 仍使用 kmer_size，保持锚点密度/行为不变。
-	            auto sketch = mash::sketchFromSequence(rec.seq, sketch_kmer_size, sketch_size,
-	                                                   noncanonical, random_seed);
-	        	ref_sequences.insert({rec.id, rec});
-	            ref_sketch.insert({rec.id, std::move(sketch)});
+	            ref_records.push_back(std::move(rec));
 	        }
+            const int build_threads = std::max(1, threads > 0 ? threads : omp_get_max_threads());
+            std::vector<mash::Sketch> ref_sketches(ref_records.size());
+
+#pragma omp parallel for default(none) schedule(dynamic) num_threads(build_threads) \
+    shared(ref_records, ref_sketches) firstprivate(sketch_kmer_size, sketch_size, noncanonical, random_seed)
+            for (std::int64_t i = 0; i < static_cast<std::int64_t>(ref_records.size()); ++i) {
+                ref_sketches[static_cast<std::size_t>(i)] = mash::sketchFromSequence(
+                    ref_records[static_cast<std::size_t>(i)].seq,
+                    static_cast<std::size_t>(sketch_kmer_size),
+                    static_cast<std::size_t>(sketch_size),
+                    noncanonical,
+                    random_seed);
+            }
+
+            ref_sequences.reserve(ref_records.size());
+            ref_sketch.reserve(ref_records.size());
+            for (std::size_t i = 0; i < ref_records.size(); ++i) {
+                auto [seq_it, inserted] = ref_sequences.emplace(ref_records[i].id, std::move(ref_records[i]));
+                if (inserted) {
+                    ref_sketch.emplace(seq_it->first, std::move(ref_sketches[i]));
+                }
+            }
+            if (ref_sketch.size() > 1) {
+                const std::size_t removed_common_hashes = mash::removeCommonHashesFromSketches(ref_sketch);
+                if (removed_common_hashes != 0) {
+                    spdlog::info("Removed {} hashes shared by all reference sketches", removed_common_hashes);
+                }
+            }
+            if (ref_sketch.size() > kSketchBitsetRefThreshold) {
+                ref_sketch_bitset_index.build(ref_sketch, false);
+                spdlog::info("Built reference sketch bitset index: {} refs, {} hash dictionary entries",
+                             ref_sketch_bitset_index.size(),
+                             ref_sketch_bitset_index.dictionarySize());
+            }
         	spdlog::info("Loaded {} reference sequences", ref_sequences.size());
 
 	        // 设置共识序列生成的文件路径
@@ -116,10 +148,24 @@ namespace align {
 
         	seq_io::KseqReader reader2(consensus_aligned_file);
         	seq_io::SeqRecord rec2;
+            std::vector<seq_io::SeqRecord> aligned_ref_records;
         	while (reader2.next(rec2))
         	{
-        		ref_profile.insert({rec2.id, ProfileMatrix::fromAlignedSequences({rec2.seq})});
+        		aligned_ref_records.push_back(std::move(rec2));
         	}
+            std::vector<ProfileMatrix> aligned_ref_profiles(aligned_ref_records.size());
+
+#pragma omp parallel for default(none) schedule(dynamic) num_threads(build_threads) \
+    shared(aligned_ref_records, aligned_ref_profiles)
+            for (std::int64_t i = 0; i < static_cast<std::int64_t>(aligned_ref_records.size()); ++i) {
+                aligned_ref_profiles[static_cast<std::size_t>(i)] =
+                    ProfileMatrix::fromAlignedSequence(aligned_ref_records[static_cast<std::size_t>(i)].seq);
+            }
+
+            ref_profile.reserve(aligned_ref_records.size());
+            for (std::size_t i = 0; i < aligned_ref_records.size(); ++i) {
+                ref_profile.emplace(aligned_ref_records[i].id, std::move(aligned_ref_profiles[i]));
+            }
 	        consensus::ConsensusResult consensus_result = consensus::generateConsensusResult(
 	            consensus_aligned_file, consensus_file, consensus_json_file,
 	            0, threads, consensus_batch_size);
@@ -316,12 +362,22 @@ namespace align {
         double best_jaccard = -1.0;
 
         if (ref_sequences.size() > 1) {
-            for (const auto& [ref_id, sketch] : ref_sketch) {
-                const double j = mash::jaccard(qsk, sketch);
-                if (best_ref_id.empty() || j > best_jaccard ||
-                    (j == best_jaccard && ref_id < best_ref_id)) {
-                    best_jaccard = j;
-                    best_ref_id = ref_id;
+            if (ref_sketch_bitset_index.usable()) {
+                const mash::SketchMatch match = ref_sketch_bitset_index.findBest(qsk);
+                if (match.found) {
+                    best_jaccard = match.similarity;
+                    best_ref_id = match.id;
+                }
+            }
+
+            if (best_ref_id.empty()) {
+                for (const auto& [ref_id, sketch] : ref_sketch) {
+                    const double j = mash::jaccard(qsk, sketch);
+                    if (best_ref_id.empty() || j > best_jaccard ||
+                        (j == best_jaccard && ref_id < best_ref_id)) {
+                        best_jaccard = j;
+                        best_ref_id = ref_id;
+                    }
                 }
             }
 
