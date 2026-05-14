@@ -271,18 +271,10 @@ namespace align {
                                        seq_io::SeqWriter& out,
                                        seq_io::SeqWriter& out_insertion) const
     {
-        // 计算 query 的 sketch 和 minimizer
-        const mash::Sketch qsk = mash::sketchFromSequence(
-            q.seq,
-            static_cast<std::size_t>(sketch_kmer_size),
-            static_cast<std::size_t>(sketch_size),
-            noncanonical,
-            random_seed);
-
         const SeedHits query_minimizer = minimizer::extractMinimizer(
             q.seq, kmer_size, window_size, noncanonical);
 
-        const double consensus_similarity = mash::jaccard(qsk, consensus_sketch);
+        const double consensus_similarity = 1;
         cigar::Cigar_t consensus_cigar = Seq2SeqWithAnchor(
             consensus_seq.seq, q.seq, consensus_similarity,
             &consensus_minimizer, &query_minimizer);
@@ -692,51 +684,6 @@ namespace align {
         chunk.reserve(batch_size);
         ProgressBar progress("align", 10);
         progress.tick(0);
-
-
-
-        // 预热阶段：先串行处理固定数量的序列，并且“每比对一条就更新一次 profile”。
-        // 目的：让后续 batch 并行阶段在更有信息量的 profile 上工作，降低冷启动阶段的偏差。
-        // constexpr std::size_t profile_warmup_count = 5000;
-        // std::vector<seq_io::SeqRecord> warmup_chunk(1);
-        // std::vector<cigar::Cigar_t> warmup_cigar(1);
-        // std::vector<std::string> warmup_ref_id(1);
-        // spdlog::info("Warming up alignment with {} sequences, it may be slow", profile_warmup_count);
-        //
-        // std::size_t warmup_processed = 0;
-        // seq_io::SeqRecord warmup_rec;
-        // auto& warmup_out = *outs[0];
-        // auto& warmup_out_insertion = *outs_with_insertion[0];
-        //
-        // while (warmup_processed < profile_warmup_count && reader.next(warmup_rec)) {
-        //     warmup_chunk[0] = std::move(warmup_rec);
-        //
-        //     // 串行比对一条，得到该条最终使用的 CIGAR/参考索引。
-        //     alignOneQueryToProfile(
-        //         warmup_chunk[0],
-        //         warmup_out,
-        //         warmup_out_insertion,
-        //         warmup_cigar[0],
-        //         warmup_ref_id[0],
-        //         threads);
-        //
-        //     // 每条序列比对完成后立即更新一次 profile，严格满足“比对一次、更新一次”。
-        //     updateProfilesFromChunk(warmup_chunk, warmup_cigar, warmup_ref_id);
-        //
-        //     warmup_cigar[0].clear();
-        //     warmup_ref_id[0].clear();
-        //     ++warmup_processed;
-        //     progress.tick();
-        // 	if (warmup_processed % 10 == 0) {
-        // 		spdlog::info("Warmup processed: {}/{} sequences", warmup_processed, profile_warmup_count);
-        // 	}
-        // }
-        //
-        // // 预热阶段统一刷新一次，避免仅 0 号 writer 长时间缓存。
-        // warmup_out.flush();
-        // warmup_out_insertion.flush();
-        //
-        // spdlog::info("alignSeq2Profile warmup processed {} sequences", warmup_processed);
 
         while (true) {
             chunk.clear();
