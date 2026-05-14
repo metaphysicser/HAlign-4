@@ -51,13 +51,8 @@ namespace align {
 	            // minimizer 仍使用 kmer_size，保持锚点密度/行为不变。
 	            auto sketch = mash::sketchFromSequence(rec.seq, sketch_kmer_size, sketch_size,
 	                                                   noncanonical, random_seed);
-	            auto minimizer = minimizer::extractMinimizer(rec.seq, kmer_size,
-	                                                         window_size, noncanonical);
-	            ref_profile.push_back(ProfileMatrix(rec.seq));
-	            ref_sequences.push_back(std::move(rec));
-	            ref_sketch.push_back(std::move(sketch));
-	            ref_minimizers.push_back(std::move(minimizer));
-
+	        	ref_sequences.insert({rec.id, rec});
+	            ref_sketch.insert({rec.id, std::move(sketch)});
 	        }
         	spdlog::info("Loaded {} reference sequences", ref_sequences.size());
 
@@ -79,16 +74,24 @@ namespace align {
 	        } else {
 	            alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, this->msa_cmd, threads);
 	        }
+
+        	seq_io::KseqReader reader2(consensus_aligned_file);
+        	seq_io::SeqRecord rec2;
+        	while (reader2.next(rec2))
+        	{
+        		ref_profile.insert({rec2.id, ProfileMatrix(rec2.seq)});
+        	}
 	        consensus::ConsensusResult consensus_result = consensus::generateConsensusResult(
 	            consensus_aligned_file, consensus_file, consensus_json_file,
 	            0, threads, consensus_batch_size);
 
 	        consensus_gap_seq.id = "consensus";
 	        consensus_gap_seq.seq = std::move(consensus_result.gap_seq);
-	        consensus_seq.id = "consensus";
-	        consensus_seq.seq = std::move(consensus_result.seq);
 	        consensus_profile = ProfileMatrix::fromConsensusCounts(consensus_result.counts);
 
+        	// 以下变量为seq2seq准备
+        	consensus_seq.id = "consensus";
+        	consensus_seq.seq = std::move(consensus_result.seq);
 	        // 预计算共识序列的 sketch 和 minimizer，避免重复计算
 	        consensus_sketch = mash::sketchFromSequence(
 	            consensus_seq.seq,

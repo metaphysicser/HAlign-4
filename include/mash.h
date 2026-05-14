@@ -7,6 +7,7 @@
 #include <vector>
 #include "hash.h"
 #include "bloom_filter.hpp"
+#include <unordered_map>
 
 namespace mash
 {
@@ -61,6 +62,7 @@ namespace mash
         bool empty() const noexcept { return hashes.empty(); }
     };
     using Sketches = std::vector<Sketch>;
+	using SketchMap = std::unordered_map<std::string, Sketch>;  // id -> sketch
 
     // ------------------------------------------------------------
     // Construction

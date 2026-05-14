@@ -21,6 +21,7 @@
 #include <regex>
 #include <array>
 #include <cstdint>
+#include <unordered_map>
 
 #if __has_include(<curl/curl.h>)
 #include <curl/curl.h>
@@ -116,6 +117,7 @@ namespace seq_io
         int n_num = 0;      // 序列中 N/n 的数量
     };
     using SeqRecords     = std::vector<seq_io::SeqRecord>;
+	using SeqRecordMap   = std::unordered_map<std::string, SeqRecord>;
 
     // ------------------------------------------------------------------
     // SamRecord：用于在内存中表示一条 SAM 比对记录

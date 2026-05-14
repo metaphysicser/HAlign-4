@@ -170,6 +170,8 @@ namespace align {
         }
     };
 
+	using ProfileMatrixMap = std::unordered_map<std::string, ProfileMatrix>;
+
 
     // DNA 字符映射到 0..4（A/C/G/T/N，大小写不敏感；其他字符按 N）
     static constexpr uint8_t ScoreChar2Idx[256] = {
@@ -220,7 +222,7 @@ namespace align {
         int end_bonus = 0;                  // 末端奖励
         int zdrop = -1;                     // -1 表示默认/不启用
         int band_width = -1;                // -1 表示不限制带宽
-        int flag = KSW_EZ_GENERIC_SC | KSW_EZ_RIGHT;
+        int flag = KSW_EZ_RIGHT;
     };
 
 
@@ -235,7 +237,6 @@ namespace align {
         {
             return -1;
         }
-
         // 经验公式：预期 indel 规模 + 安全边距
         return margin + static_cast<int>(indel_rate * (qlen + tlen / 2));
 
@@ -422,10 +423,10 @@ namespace align {
         FilePath work_dir;
 
         // 参考序列与索引
-        seq_io::SeqRecords ref_sequences;   // 参考序列集合
-        mash::Sketches ref_sketch;          // 每条参考序列的 MinHash sketch
-        std::vector<SeedHits> ref_minimizers;  // 每条参考序列的 minimizer 索引
-        std::vector<ProfileMatrix> ref_profile;    // 参考序列的碱基计数 profile（按列存储，便于向量化）
+        seq_io::SeqRecordMap ref_sequences;   // 参考序列集合
+        mash::SketchMap ref_sketch;          // 每条参考序列的 MinHash sketch
+        // std::vector<SeedHits> ref_minimizers;  // 每条参考序列的 minimizer 索引
+        ProfileMatrixMap ref_profile;    // 参考序列的碱基计数 profile（按列存储，便于向量化）
 
         // 共识序列与索引（构造时预计算，避免重复计算）
         seq_io::SeqRecord consensus_gap_seq;
