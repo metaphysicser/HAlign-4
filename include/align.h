@@ -322,7 +322,11 @@ namespace align {
                    const FilePath& ref_aligned_path = FilePath(),
                    std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX,
                    int gap_open = 10,
-                   int gap_extend = 2);
+                   int gap_extend = 2,
+                   int profile_k_min = 1,
+                   int profile_k_max = 5,
+                   double profile_k_similarity_ratio = 0.95,
+                   bool detect_reverse_complement = false);
 
         // Options 构造（推荐）
         RefAligner(const Options& opt, const FilePath& ref_fasta_path);
@@ -367,14 +371,17 @@ namespace align {
                                seq_io::SeqWriter& out,
                                seq_io::SeqWriter& out_insertion,
                                cigar::Cigar_t& out_cigar,
-                               std::string& out_ref_id,
+                               std::vector<std::string>& out_ref_ids,
+                               seq_io::SeqRecord& out_profile_query,
                                int thread = 0) const;
 
         // 根据一个 chunk 的对齐结果增量更新 profile 计数（不改变 profile 形状）
         void updateProfilesFromChunk(
             const std::vector<seq_io::SeqRecord>& chunk,
             const std::vector<cigar::Cigar_t>& cigar_chunk,
-            const std::vector<std::string>& ref_id_chunk);
+            const std::vector<std::vector<std::string>>& ref_ids_chunk);
+
+        std::vector<mash::SketchMatch> selectProfileMatches(const mash::Sketch& query_sketch) const;
 
         // 将单条 query 按 CIGAR 投影到 profile 列并累加碱基计数，成功返回 true
         static bool applyCigarToProfile(
@@ -481,6 +488,10 @@ namespace align {
         std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX;
         int gap_open = 10;
         int gap_extend = 2;
+        int profile_k_min = 1;
+        int profile_k_max = 5;
+        double profile_k_similarity_ratio = 0.95;
+        bool detect_reverse_complement = false;
 
         // 是否考虑反向互补
         bool noncanonical = true;

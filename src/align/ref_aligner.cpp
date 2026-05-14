@@ -4,11 +4,13 @@
 #include "consensus.h"
 #include "seed.h"
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 #include <omp.h>
 #include <unordered_map>
@@ -18,6 +20,105 @@ namespace align {
 
     namespace {
         constexpr std::size_t kSketchBitsetRefThreshold = 10;
+        constexpr std::uint32_t kProfileEqualWeightScale = 1024;
+
+        char complementBase(char ch)
+        {
+            switch (ch) {
+                case 'A': case 'a': return 'T';
+                case 'C': case 'c': return 'G';
+                case 'G': case 'g': return 'C';
+                case 'T': case 't': return 'A';
+                case 'U': case 'u': return 'A';
+                case '-': case '.': return ch;
+                default: return 'N';
+            }
+        }
+
+        seq_io::SeqRecord reverseComplementRecord(const seq_io::SeqRecord& rec)
+        {
+            seq_io::SeqRecord out = rec;
+            out.seq.resize(rec.seq.size());
+            for (std::size_t i = 0; i < rec.seq.size(); ++i) {
+                out.seq[i] = complementBase(rec.seq[rec.seq.size() - 1U - i]);
+            }
+            if (!out.qual.empty()) {
+                std::reverse(out.qual.begin(), out.qual.end());
+            }
+            return out;
+        }
+
+        std::vector<mash::SketchMatch> selectAdaptiveMatches(std::vector<mash::SketchMatch> matches,
+                                                             std::size_t min_count,
+                                                             std::size_t max_count,
+                                                             double similarity_ratio)
+        {
+            if (matches.empty()) {
+                return {};
+            }
+
+            std::sort(matches.begin(), matches.end(),
+                      [](const mash::SketchMatch& a, const mash::SketchMatch& b) {
+                          if (a.similarity != b.similarity) return a.similarity > b.similarity;
+                          return a.id < b.id;
+                      });
+
+            min_count = std::max<std::size_t>(1, min_count);
+            max_count = std::max(min_count, max_count);
+            min_count = std::min(min_count, matches.size());
+            max_count = std::min(max_count, matches.size());
+            similarity_ratio = std::clamp(similarity_ratio, 0.0, 1.0);
+
+            const double best_score = matches.front().similarity;
+            const double threshold = best_score > 0.0 ? best_score * similarity_ratio : best_score;
+
+            std::vector<mash::SketchMatch> selected;
+            selected.reserve(max_count);
+            for (std::size_t i = 0; i < matches.size() && selected.size() < max_count; ++i) {
+                if (selected.size() < min_count ||
+                    (best_score > 0.0 && matches[i].similarity >= threshold)) {
+                    selected.push_back(std::move(matches[i]));
+                } else {
+                    break;
+                }
+            }
+            return selected;
+        }
+
+        ProfileMatrix combineProfilesEqualWeight(const std::vector<const ProfileMatrix*>& profiles)
+        {
+            if (profiles.empty()) {
+                return ProfileMatrix();
+            }
+
+            const int len = profiles.front()->len;
+            const int dim = profiles.front()->dim;
+            if (len < 0 || dim <= 0) {
+                throw std::runtime_error("combineProfilesEqualWeight: invalid profile shape");
+            }
+
+            ProfileMatrix combined;
+            combined.len = len;
+            combined.dim = dim;
+            combined.depth = static_cast<int>(profiles.size() * kProfileEqualWeightScale);
+            combined.prof.assign(static_cast<std::size_t>(len) * static_cast<std::size_t>(dim), 0U);
+
+            for (const ProfileMatrix* profile : profiles) {
+                if (profile == nullptr || profile->len != len || profile->dim != dim ||
+                    profile->prof.size() != static_cast<std::size_t>(len) * static_cast<std::size_t>(dim)) {
+                    throw std::runtime_error("combineProfilesEqualWeight: profile shape mismatch");
+                }
+
+                const double denom = profile->depth > 0 ? static_cast<double>(profile->depth) : 1.0;
+                for (std::size_t i = 0; i < profile->prof.size(); ++i) {
+                    const double weighted = static_cast<double>(profile->prof[i]) *
+                                            static_cast<double>(kProfileEqualWeightScale) / denom;
+                    combined.prof[i] += static_cast<std::uint32_t>(std::llround(weighted));
+                }
+            }
+
+            return combined;
+        }
 
         std::string profileToGappedSequence(const ProfileMatrix& profile)
         {
@@ -67,7 +168,11 @@ namespace align {
                                                      const FilePath& ref_aligned_path,
                                                      std::array<int8_t, 25> score_matrix_in,
                                                      int gap_open,
-                                                     int gap_extend)
+                                                     int gap_extend,
+                                                     int profile_k_min,
+                                                     int profile_k_max,
+                                                     double profile_k_similarity_ratio,
+                                                     bool detect_reverse_complement)
         : work_dir(work_dir),
           kmer_size(kmer_size),
           window_size(window_size),
@@ -80,7 +185,11 @@ namespace align {
           enable_wfa(enable_wfa),
           score_matrix(score_matrix_in),
           gap_open(gap_open),
-          gap_extend(gap_extend)
+          gap_extend(gap_extend),
+          profile_k_min(profile_k_min),
+          profile_k_max(profile_k_max),
+          profile_k_similarity_ratio(profile_k_similarity_ratio),
+          detect_reverse_complement(detect_reverse_complement)
     {
 	        // 加载参考序列，sketch 在读取完成后并行构建，避免串行 I/O 循环承担重计算。
 	        seq_io::KseqReader reader(ref_fasta_path);
@@ -208,7 +317,11 @@ namespace align {
             FilePath(opt.ref_align_path),
             opt.score_matrix,
             opt.gap_open,
-            opt.gap_extend)
+            opt.gap_extend,
+            opt.profile_k_min,
+            opt.profile_k_max,
+            opt.profile_k_similarity_ratio,
+            opt.detect_reverse_complement)
     {
     }
 
@@ -312,23 +425,68 @@ namespace align {
         out.writeSam(sam_rec);
     }
 
+    std::vector<mash::SketchMatch> RefAligner::selectProfileMatches(const mash::Sketch& query_sketch) const
+    {
+        const std::size_t min_count = static_cast<std::size_t>(std::max(1, profile_k_min));
+        const std::size_t max_count = static_cast<std::size_t>(std::max(profile_k_min, profile_k_max));
+
+        if (ref_sketch_bitset_index.usable()) {
+            return ref_sketch_bitset_index.findTopK(
+                query_sketch, min_count, max_count, profile_k_similarity_ratio);
+        }
+
+        std::vector<mash::SketchMatch> matches;
+        matches.reserve(ref_sketch.size());
+        for (const auto& [ref_id, sketch] : ref_sketch) {
+            matches.push_back(mash::SketchMatch{
+                ref_id,
+                mash::jaccard(query_sketch, sketch),
+                true
+            });
+        }
+        return selectAdaptiveMatches(std::move(matches), min_count, max_count,
+                                     profile_k_similarity_ratio);
+    }
+
     // 单条 query 比对
     void RefAligner::alignOneQueryToRef(const seq_io::SeqRecord& q,
                                        seq_io::SeqWriter& out,
                                        seq_io::SeqWriter& out_insertion) const
     {
+        const seq_io::SeqRecord* query_record = &q;
+        seq_io::SeqRecord rc_query_storage;
+        if (detect_reverse_complement) {
+            const mash::Sketch fwd_sketch = mash::sketchFromSequence(
+                q.seq,
+                static_cast<std::size_t>(sketch_kmer_size),
+                static_cast<std::size_t>(sketch_size),
+                noncanonical,
+                random_seed);
+            rc_query_storage = reverseComplementRecord(q);
+            const mash::Sketch rc_sketch = mash::sketchFromSequence(
+                rc_query_storage.seq,
+                static_cast<std::size_t>(sketch_kmer_size),
+                static_cast<std::size_t>(sketch_size),
+                noncanonical,
+                random_seed);
+            if (mash::jaccard(rc_sketch, consensus_sketch) >
+                mash::jaccard(fwd_sketch, consensus_sketch)) {
+                query_record = &rc_query_storage;
+            }
+        }
+
         const SeedHits query_minimizer = minimizer::extractMinimizer(
-            q.seq, kmer_size, window_size, noncanonical);
+            query_record->seq, kmer_size, window_size, noncanonical);
 
         const double consensus_similarity = 1;
         cigar::Cigar_t consensus_cigar = Seq2SeqWithAnchor(
-            consensus_seq.seq, q.seq, consensus_similarity,
+            consensus_seq.seq, query_record->seq, consensus_similarity,
             &consensus_minimizer, &query_minimizer);
 
         if (cigar::hasInsertion(consensus_cigar)) {
-            writeSamRecord(q, consensus_cigar, consensus_seq.id, out_insertion);
+            writeSamRecord(*query_record, consensus_cigar, consensus_seq.id, out_insertion);
         } else {
-            writeSamRecord(q, consensus_cigar, consensus_seq.id, out);
+            writeSamRecord(*query_record, consensus_cigar, consensus_seq.id, out);
         }
     }
 
@@ -336,111 +494,104 @@ namespace align {
                        seq_io::SeqWriter& out,
                        seq_io::SeqWriter& out_insertion,
                        cigar::Cigar_t& out_cigar,
-                       std::string& out_ref_id,
+                       std::vector<std::string>& out_ref_ids,
+                       seq_io::SeqRecord& out_profile_query,
                        int thread) const
     {
         // 初始化输出占位，便于调用方在调试时识别“未写入”状态
         out_cigar.clear();
-        out_ref_id.clear();
+        out_ref_ids.clear();
+        out_profile_query = q;
 
-        // 计算 query 的 sketch 和 minimizer
-        const mash::Sketch qsk = mash::sketchFromSequence(
-            q.seq,
-            static_cast<std::size_t>(sketch_kmer_size),
-            static_cast<std::size_t>(sketch_size),
-            noncanonical,
-            random_seed);
+        auto sketch_query = [this](const std::string& seq) {
+            return mash::sketchFromSequence(
+                seq,
+                static_cast<std::size_t>(sketch_kmer_size),
+                static_cast<std::size_t>(sketch_size),
+                noncanonical,
+                random_seed);
+        };
 
-        const SeedHits query_minimizer = minimizer::extractMinimizer(
-            q.seq, kmer_size, window_size, noncanonical);
-
-        const ProfileMatrix* best_ref_profile = &consensus_profile;
-        std::string best_ref_string = consensus_gap_seq.seq;
-        std::string best_ref_id;
-        const SeedHits* best_ref_minimizer = nullptr;
-        SeedHits best_ref_minimizer_storage;
+        mash::Sketch qsk = sketch_query(q.seq);
+        std::vector<mash::SketchMatch> selected_matches;
         double best_jaccard = -1.0;
 
         if (ref_sequences.size() > 1) {
-            if (ref_sketch_bitset_index.usable()) {
-                const mash::SketchMatch match = ref_sketch_bitset_index.findBest(qsk);
-                if (match.found) {
-                    best_jaccard = match.similarity;
-                    best_ref_id = match.id;
+            selected_matches = selectProfileMatches(qsk);
+            best_jaccard = selected_matches.empty() ? 0.0 : selected_matches.front().similarity;
+
+            if (detect_reverse_complement) {
+                seq_io::SeqRecord rc_query = reverseComplementRecord(q);
+                mash::Sketch rc_sketch = sketch_query(rc_query.seq);
+                std::vector<mash::SketchMatch> rc_matches = selectProfileMatches(rc_sketch);
+                const double rc_best = rc_matches.empty() ? 0.0 : rc_matches.front().similarity;
+                if (rc_best > best_jaccard) {
+                    out_profile_query = std::move(rc_query);
+                    qsk = std::move(rc_sketch);
+                    selected_matches = std::move(rc_matches);
+                    best_jaccard = rc_best;
                 }
             }
-
-            if (best_ref_id.empty()) {
-                for (const auto& [ref_id, sketch] : ref_sketch) {
-                    const double j = mash::jaccard(qsk, sketch);
-                    if (best_ref_id.empty() || j > best_jaccard ||
-                        (j == best_jaccard && ref_id < best_ref_id)) {
-                        best_jaccard = j;
-                        best_ref_id = ref_id;
-                    }
-                }
-            }
-
-            auto profile_it = ref_profile.find(best_ref_id);
-            if (profile_it == ref_profile.end()) {
-                throw std::runtime_error("Reference profile '" + best_ref_id + "' not found");
-            }
-
-            best_ref_profile = &profile_it->second;
-            best_ref_string = profileToGappedSequence(*best_ref_profile);
-            best_ref_minimizer_storage = minimizer::extractMinimizer(
-                best_ref_string, kmer_size, window_size, noncanonical);
-            best_ref_minimizer = &best_ref_minimizer_storage;
         } else {
-            best_ref_minimizer = &consensus_gap_minimizer;
             best_jaccard = mash::jaccard(qsk, consensus_sketch);
+            if (detect_reverse_complement) {
+                seq_io::SeqRecord rc_query = reverseComplementRecord(q);
+                mash::Sketch rc_sketch = sketch_query(rc_query.seq);
+                const double rc_jaccard = mash::jaccard(rc_sketch, consensus_sketch);
+                if (rc_jaccard > best_jaccard) {
+                    out_profile_query = std::move(rc_query);
+                    qsk = std::move(rc_sketch);
+                    best_jaccard = rc_jaccard;
+                }
+            }
+        }
+
+        const SeedHits query_minimizer = minimizer::extractMinimizer(
+            out_profile_query.seq, kmer_size, window_size, noncanonical);
+
+        const ProfileMatrix* alignment_profile = &consensus_profile;
+        std::string alignment_ref_string = consensus_gap_seq.seq;
+        const SeedHits* alignment_ref_minimizer = &consensus_gap_minimizer;
+        SeedHits alignment_ref_minimizer_storage;
+        ProfileMatrix combined_profile;
+
+        if (ref_sequences.size() > 1) {
+            if (selected_matches.empty()) {
+                throw std::runtime_error("alignOneQueryToProfile: no reference profile candidate selected");
+            }
+
+            std::vector<const ProfileMatrix*> selected_profiles;
+            selected_profiles.reserve(selected_matches.size());
+            out_ref_ids.reserve(selected_matches.size());
+
+            for (const mash::SketchMatch& match : selected_matches) {
+                auto profile_it = ref_profile.find(match.id);
+                if (profile_it == ref_profile.end()) {
+                    throw std::runtime_error("Reference profile '" + match.id + "' not found");
+                }
+                selected_profiles.push_back(&profile_it->second);
+                out_ref_ids.push_back(match.id);
+            }
+
+            combined_profile = combineProfilesEqualWeight(selected_profiles);
+            alignment_profile = &combined_profile;
+            alignment_ref_string = profileToGappedSequence(combined_profile);
+            alignment_ref_minimizer_storage = minimizer::extractMinimizer(
+                alignment_ref_string, kmer_size, window_size, noncanonical);
+            alignment_ref_minimizer = &alignment_ref_minimizer_storage;
         }
 
         // 执行全局比对
         cigar::Cigar_t initial_cigar = Seq2ProfileWithAnchor(
-            *best_ref_profile, best_ref_string, q.seq, best_jaccard, thread,
-            best_ref_minimizer, &query_minimizer);
+            *alignment_profile, alignment_ref_string, out_profile_query.seq, best_jaccard, thread,
+            alignment_ref_minimizer, &query_minimizer);
 
-        // 单参考序列：直接使用初始比对结果
-        if (ref_sequences.size() == 1) {
-            // 记录“最终输出”的 CIGAR 和参考 id，便于批处理阶段复用/统计
-            out_cigar = initial_cigar;
-            out_ref_id.clear();
+        out_cigar = initial_cigar;
 
-            if (cigar::hasInsertion(initial_cigar)) {
-                writeSamRecord(q, initial_cigar, consensus_seq.id, out_insertion);
-            } else {
-                writeSamRecord(q, initial_cigar, consensus_seq.id, out);
-            }
-            return;
-        }
-
-        // 多参考序列 + keep_length：保留与最佳参考的比对结果
-        if (keep_length) {
-            out_cigar = initial_cigar;
-            out_ref_id = best_ref_id;
-
-            if (cigar::hasInsertion(initial_cigar)) {
-                writeSamRecord(q, initial_cigar, consensus_seq.id, out_insertion);
-            } else {
-                writeSamRecord(q, initial_cigar, consensus_seq.id, out);
-            }
-            return;
-        }
-
-        // 多参考序列 + 非 keep_length：有插入时与共识序列二次比对
-        const double consensus_similarity = mash::jaccard(qsk, consensus_sketch);
-        cigar::Cigar_t recheck_cigar = Seq2ProfileWithAnchor(
-            consensus_profile, consensus_gap_seq.seq, q.seq, consensus_similarity, thread,
-            &consensus_gap_minimizer, &query_minimizer);
-
-        out_cigar = recheck_cigar;
-        out_ref_id.clear(); // 使用共识作为最终参考，避免误解为某条原始参考序列
-
-        if (cigar::hasInsertion(recheck_cigar)) {
-            writeSamRecord(q, recheck_cigar, consensus_seq.id, out_insertion);
+        if (cigar::hasInsertion(initial_cigar)) {
+            writeSamRecord(out_profile_query, initial_cigar, consensus_seq.id, out_insertion);
         } else {
-            writeSamRecord(q, recheck_cigar, consensus_seq.id, out);
+            writeSamRecord(out_profile_query, initial_cigar, consensus_seq.id, out);
         }
     }
 
@@ -517,10 +668,10 @@ namespace align {
     void RefAligner::updateProfilesFromChunk(
         const std::vector<seq_io::SeqRecord>& chunk,
         const std::vector<cigar::Cigar_t>& cigar_chunk,
-        const std::vector<std::string>& ref_id_chunk)
+        const std::vector<std::vector<std::string>>& ref_ids_chunk)
     {
-        if (chunk.size() != cigar_chunk.size() || chunk.size() != ref_id_chunk.size()) {
-            throw std::runtime_error("updateProfilesFromChunk: chunk/cigar/ref_id size mismatch");
+        if (chunk.size() != cigar_chunk.size() || chunk.size() != ref_ids_chunk.size()) {
+            throw std::runtime_error("updateProfilesFromChunk: chunk/cigar/ref_ids size mismatch");
         }
 
         // 串行更新共享 profile：避免在并行区对同一 profile 加锁，减少锁竞争与缓存抖动。
@@ -529,31 +680,38 @@ namespace align {
                 continue;
             }
 
-            ProfileMatrix* target_profile = nullptr;
-            if (ref_id_chunk[i].empty()) {
+            if (ref_ids_chunk[i].empty()) {
                 // 空 id 表示最终参考为共识序列，更新 consensus_profile。
-                target_profile = &consensus_profile;
-            } else {
-                auto profile_it = ref_profile.find(ref_id_chunk[i]);
-                if (profile_it != ref_profile.end()) {
-                    target_profile = &profile_it->second;
+                if (applyCigarToProfile(chunk[i].seq, cigar_chunk[i], consensus_profile)) {
+                    ++consensus_profile.depth;
                 } else {
 #ifdef _DEBUG
+                    spdlog::debug("updateProfilesFromChunk: skip invalid consensus cigar for query={} at i={}",
+                                  chunk[i].id, i);
+#endif
+                }
+                continue;
+            }
+
+            for (const std::string& ref_id : ref_ids_chunk[i]) {
+                auto profile_it = ref_profile.find(ref_id);
+                if (profile_it == ref_profile.end()) {
+#ifdef _DEBUG
                     spdlog::debug("updateProfilesFromChunk: skip invalid ref_id={} at i={}",
-                                  ref_id_chunk[i], i);
+                                  ref_id, i);
 #endif
                     continue;
                 }
-            }
 
-            if (applyCigarToProfile(chunk[i].seq, cigar_chunk[i], *target_profile)) {
-                // depth 表示累计纳入 profile 的序列数，成功更新一条后再增加。
-                ++target_profile->depth;
-            } else {
+                if (applyCigarToProfile(chunk[i].seq, cigar_chunk[i], profile_it->second)) {
+                    // depth 表示该 profile 内累计纳入的序列数；不同 profile 合并时会再做等权归一化。
+                    ++profile_it->second.depth;
+                } else {
 #ifdef _DEBUG
-                spdlog::debug("updateProfilesFromChunk: skip invalid cigar for query={} at i={}",
-                              chunk[i].id, i);
+                    spdlog::debug("updateProfilesFromChunk: skip invalid cigar for query={} ref_id={} at i={}",
+                                  chunk[i].id, ref_id, i);
 #endif
+                }
             }
         }
     }
@@ -735,8 +893,9 @@ namespace align {
         // 流式读取 + 批处理并行
         seq_io::KseqReader reader(qry_fasta_path);
         std::vector<seq_io::SeqRecord> chunk;
+        std::vector<seq_io::SeqRecord> profile_query_chunk;
         std::vector<cigar::Cigar_t> cigar_chunk;
-        std::vector<std::string> ref_id_chunk;
+        std::vector<std::vector<std::string>> ref_ids_chunk;
         chunk.reserve(batch_size);
         ProgressBar progress("align", 10);
         progress.tick(0);
@@ -755,11 +914,14 @@ namespace align {
             if (chunk.empty()) break;
 
             // 为本批次预分配结果槽位，保证并行区内“每个 i 独占写入”无竞态
+            profile_query_chunk.clear();
+            profile_query_chunk.resize(chunk.size());
             cigar_chunk.clear();
             cigar_chunk.resize(chunk.size());
-            ref_id_chunk.assign(chunk.size(), std::string());
+            ref_ids_chunk.clear();
+            ref_ids_chunk.resize(chunk.size());
 
-#pragma omp parallel default(none) shared(outs, outs_with_insertion, chunk, cigar_chunk, ref_id_chunk)
+#pragma omp parallel default(none) shared(outs, outs_with_insertion, chunk, profile_query_chunk, cigar_chunk, ref_ids_chunk)
             {
                 const int tid = omp_get_thread_num();
                 auto& out = *outs[static_cast<std::size_t>(tid)];
@@ -773,12 +935,13 @@ namespace align {
                         out,
                         out_insertion,
                         cigar_chunk[static_cast<std::size_t>(i)],
-                        ref_id_chunk[static_cast<std::size_t>(i)], 0);
+                        ref_ids_chunk[static_cast<std::size_t>(i)],
+                        profile_query_chunk[static_cast<std::size_t>(i)], 0);
                 }
             }
 
             // 根据本批次对齐结果增量更新 profile，供后续批次选择参考和 profile 比对使用。
-            updateProfilesFromChunk(chunk, cigar_chunk, ref_id_chunk);
+            updateProfilesFromChunk(profile_query_chunk, cigar_chunk, ref_ids_chunk);
 
             const std::size_t chunk_size = chunk.size();
 

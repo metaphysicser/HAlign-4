@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
+#include <memory>
 
 // 程序入口：命令行解析 -> 预处理 -> 共识对齐 -> 序列比对 -> 结果合并 -> 清理工作目录
 
@@ -40,6 +41,13 @@ static void checkOption(Options& opt) {
     if (opt.cons_n <= 0) throw std::runtime_error("cons_n must be > 0");
     if (opt.gap_open < 0 || opt.gap_open > 127) throw std::runtime_error("gap_open must be in [0, 127]");
     if (opt.gap_extend < 0 || opt.gap_extend > 127) throw std::runtime_error("gap_extend must be in [0, 127]");
+    if (opt.profile_k_min <= 0) throw std::runtime_error("profile_k_min must be > 0");
+    if (opt.profile_k_max < opt.profile_k_min) {
+        throw std::runtime_error("profile_k_max must be >= profile_k_min");
+    }
+    if (opt.profile_k_similarity_ratio < 0.0 || opt.profile_k_similarity_ratio > 1.0) {
+        throw std::runtime_error("profile_k_similarity_ratio must be in [0, 1]");
+    }
     if (opt.kmer_size > 31) throw std::runtime_error("kmer_size too large (must be <= 31)");
     if (opt.sketch_kmer_size > 31) throw std::runtime_error("sketch_kmer_size too large (must be <= 31)");
     if (opt.kmer_window >= 256) {
@@ -94,6 +102,7 @@ int main(int argc, char** argv) {
         Options opt;
         CLI::App app{"halign4"};
         setupCli(app, opt);
+        app.formatter(std::make_shared<CustomFormatter>());
         CLI11_PARSE(app, argc, argv);
 
         // 设置默认工作目录

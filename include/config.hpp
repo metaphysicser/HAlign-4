@@ -34,6 +34,7 @@
 #include <random>
 #include <chrono>
 #include <iomanip>
+#include <utility>
 
 // ------------------------------------------------------------------
 // 通用配置常量
@@ -215,6 +216,10 @@ struct Options {
     std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX;
     int gap_open = 10;          // --gap-open：gap open 罚分
     int gap_extend = 2;         // --gap-extend：gap extend 罚分
+    int profile_k_min = 1;      // --profile-k-min：自适应 profile 集合最小数量
+    int profile_k_max = 5;      // --profile-k-max：自适应 profile 集合最大数量
+    double profile_k_similarity_ratio = 0.95; // --profile-k-ratio：相对最佳相似度阈值
+    bool detect_reverse_complement = false; // --detect-rc：自动检测并使用反向互补 query
 
 	// keep length 相关开关：
 	// - keep_length：保持“第一条/中心序列”的长度不变（其余序列允许按对齐结果变化/填充），适用于只关心输出共识/中心序列长度的场景。
@@ -235,6 +240,7 @@ static void setupCli(CLI::App& app, Options& opt) {
 
     // 设置版本标志：--version 打印版本并退出，-h/--help 也会显示版本信息
     app.set_version_flag("-v,--version", std::string("halign4 version ") + VERSION);
+    app.set_help_all_flag("--detail-help", "Print detailed help message and exit");
 
    // 必须参数（同时支持短参数和长参数）
     // -i/--input：输入序列（FASTA）。
@@ -319,7 +325,8 @@ static void setupCli(CLI::App& app, Options& opt) {
     // - 合法范围 [4,31]（与部分位运算/编码实现约束一致）。
     app.add_option("--kmer-size", opt.kmer_size, "K-mer size used in sketch/minimizer.")
         ->default_val(19)
-        ->check(CLI::Range(4, 31));
+        ->check(CLI::Range(4, 31))
+        ->group("Detailed options");
 
 
     // --kmer-window：minimizer 窗口大小 w（单位：k-mer 数）。
@@ -327,7 +334,8 @@ static void setupCli(CLI::App& app, Options& opt) {
     app.add_option("--kmer-window", opt.kmer_window,
                    "Minimizer window size w (in number of k-mers).")
         ->default_val(19)
-        ->check(CLI::Range(1, 1000000));
+        ->check(CLI::Range(1, 1000000))
+        ->group("Detailed options");
 
     // --cons-n：用于生成共识/中心序列的 Top-N（按长度挑选）。
     // 说明：
@@ -336,13 +344,15 @@ static void setupCli(CLI::App& app, Options& opt) {
     app.add_option("--cons-n", opt.cons_n,
                    "Number of sequences used to build the consensus/center (Top-N by length).")
         ->default_val(1000)
-        ->check(CLI::Range(1, 1000000));
+        ->check(CLI::Range(1, 1000000))
+        ->group("Detailed options");
 
     // --sketch-size：sketch（minhash）大小。
     // 说明：越大越稳健但更慢/更占内存；一般默认 3000 足够。
     app.add_option("--sketch-size", opt.sketch_size, "Sketch size (minhash count).")
         ->default_val(3000)
-        ->check(CLI::Range(1, 10000000));
+        ->check(CLI::Range(1, 10000000))
+        ->group("Detailed options");
 
     // --sketch-kmer-size：仅用于 sketch 构建的 k-mer 大小。
     // 说明：
@@ -351,7 +361,8 @@ static void setupCli(CLI::App& app, Options& opt) {
     app.add_option("--sketch-kmer-size", opt.sketch_kmer_size,
                    "K-mer size used specifically for sketch construction.")
         ->default_val(21)
-        ->check(CLI::Range(4, 31));
+        ->check(CLI::Range(4, 31))
+        ->group("Detailed options");
     // --batch-size：对齐阶段批大小。
     // 说明：
     // - 仅影响 alignSeq2Profile/alignSeq2Seq 的分批读取与并行粒度；
@@ -363,21 +374,47 @@ static void setupCli(CLI::App& app, Options& opt) {
 
     app.add_option("-s,--score", opt.score_path,
                    "DNA5 alignment scoring matrix file for A/C/G/T/N (25 signed int8 scores).")
-        ->check(CLI::ExistingFile);
+        ->check(CLI::ExistingFile)
+        ->group("Detailed options");
 
     app.add_option("--gap-open", opt.gap_open,
                    "Gap open penalty used by reference alignment.")
         ->default_val(10)
-        ->check(CLI::Range(0, 127));
+        ->check(CLI::Range(0, 127))
+        ->group("Detailed options");
 
     app.add_option("--gap-extend", opt.gap_extend,
                    "Gap extension penalty used by reference alignment.")
         ->default_val(2)
-        ->check(CLI::Range(0, 127));
+        ->check(CLI::Range(0, 127))
+        ->group("Detailed options");
+
+    app.add_option("--profile-k-min", opt.profile_k_min,
+                   "Minimum number of similar reference profiles to combine.")
+        ->default_val(1)
+        ->check(CLI::Range(1, 100000))
+        ->group("Detailed options");
+
+    app.add_option("--profile-k-max", opt.profile_k_max,
+                   "Maximum number of similar reference profiles to combine.")
+        ->default_val(5)
+        ->check(CLI::Range(1, 100000))
+        ->group("Detailed options");
+
+    app.add_option("--profile-k-ratio", opt.profile_k_similarity_ratio,
+                   "Keep profiles with similarity >= best_similarity * ratio after profile-k-min.")
+        ->default_val(0.95)
+        ->check(CLI::Range(0.0, 1.0))
+        ->group("Detailed options");
+
+    app.add_flag("--detect-rc,--detect-reverse-complement", opt.detect_reverse_complement,
+        "Use the reverse-complemented query when it is more similar than the forward query.")
+        ->group("Detailed options");
 
     // 开关参数：默认关闭，传入 --wfa 时设为 true
     app.add_flag("--wfa", opt.wfa,
-        "Enable WFA alignment path (default: disabled).");
+        "Enable WFA alignment path (default: disabled).")
+        ->group("Detailed options");
 
     // 比对模式开关：默认走 seq2profile，开启后切换为 seq2seq。
     app.add_flag("--seq2seq", opt.seq2seq,
@@ -427,6 +464,10 @@ static void logParsedOptions(const Options& opt) {
         {"score", toString(opt.score_path, valW)},
         {"gap-open", std::to_string(opt.gap_open)},
         {"gap-extend", std::to_string(opt.gap_extend)},
+        {"profile-k-min", std::to_string(opt.profile_k_min)},
+        {"profile-k-max", std::to_string(opt.profile_k_max)},
+        {"profile-k-ratio", std::to_string(opt.profile_k_similarity_ratio)},
+        {"detect-rc", boolToStr(opt.detect_reverse_complement)},
         {"wfa", boolToStr(opt.wfa)},
         {"seq2seq", boolToStr(opt.seq2seq)},
         {"keep-length", boolToStr(opt.keep_length)},
@@ -469,6 +510,33 @@ static void logParsedOptions(const Options& opt) {
 class CustomFormatter : public CLI::Formatter {
 public:
 	CustomFormatter() : Formatter() {}
+
+    std::string make_help(const CLI::App* app, std::string name, CLI::AppFormatMode mode) const override {
+        if (mode != CLI::AppFormatMode::Normal) {
+            return CLI::Formatter::make_help(app, name, mode);
+        }
+
+        std::ostringstream out;
+        out << make_description(app) << '\n';
+        out << make_usage(app, std::move(name));
+        out << make_positionals(app);
+
+        for (const std::string& group : app->get_groups()) {
+            if (group == "Detailed options") {
+                continue;
+            }
+            const std::vector<const CLI::Option*> opts =
+                app->get_options([&group](const CLI::Option* opt) {
+                    return opt->get_group() == group && opt->nonpositional();
+                });
+            if (!group.empty() && !opts.empty()) {
+                out << make_group(group, false, opts);
+            }
+        }
+
+        out << "\nUse --detail-help to show advanced algorithm and scoring parameters.\n";
+        return out.str();
+    }
 
 	// 自定义参数展示样式（带默认值）
 	std::string make_option_opts(const CLI::Option* opt) const override {

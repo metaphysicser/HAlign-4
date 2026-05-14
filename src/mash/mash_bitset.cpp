@@ -7,6 +7,7 @@
 #include <limits>
 #include <stdexcept>
 #include <unordered_map>
+#include <utility>
 
 namespace mash {
 namespace detail {
@@ -36,6 +37,44 @@ namespace detail {
 #endif
     }
 } // namespace detail
+
+    static std::vector<SketchMatch> selectAdaptiveTopMatches(std::vector<SketchMatch> matches,
+                                                             std::size_t min_count,
+                                                             std::size_t max_count,
+                                                             double similarity_ratio)
+    {
+        if (matches.empty()) {
+            return {};
+        }
+
+        std::sort(matches.begin(), matches.end(),
+                  [](const SketchMatch& a, const SketchMatch& b) {
+                      if (a.similarity != b.similarity) return a.similarity > b.similarity;
+                      return a.id < b.id;
+                  });
+
+        min_count = std::max<std::size_t>(1, min_count);
+        max_count = std::max(min_count, max_count);
+        min_count = std::min(min_count, matches.size());
+        max_count = std::min(max_count, matches.size());
+        similarity_ratio = std::clamp(similarity_ratio, 0.0, 1.0);
+
+        const double best_score = matches.front().similarity;
+        const double threshold = best_score > 0.0 ? best_score * similarity_ratio : best_score;
+
+        std::vector<SketchMatch> selected;
+        selected.reserve(max_count);
+        for (std::size_t i = 0; i < matches.size() && selected.size() < max_count; ++i) {
+            if (selected.size() < min_count ||
+                (best_score > 0.0 && matches[i].similarity >= threshold)) {
+                selected.push_back(std::move(matches[i]));
+            } else {
+                break;
+            }
+        }
+
+        return selected;
+    }
 
     std::vector<hash_t> commonHashesAcrossSketches(const SketchMap& sketches)
     {
@@ -183,17 +222,30 @@ namespace detail {
 
     SketchMatch SketchBitsetIndex::findBest(const Sketch& query) const
     {
-        SketchMatch best;
+        const std::vector<SketchMatch> matches = findTopK(query, 1, 1, 1.0);
+        return matches.empty() ? SketchMatch{} : matches.front();
+    }
+
+    std::vector<SketchMatch> SketchBitsetIndex::findTopK(const Sketch& query,
+                                                         std::size_t min_count,
+                                                         std::size_t max_count,
+                                                         double similarity_ratio) const
+    {
         if (ids_.empty()) {
-            return best;
+            return {};
         }
         if (has_k_ && query.k != k_) {
-            throw std::invalid_argument("SketchBitsetIndex::findBest: mismatched sketch k");
+            throw std::invalid_argument("SketchBitsetIndex::findTopK: mismatched sketch k");
         }
+
+        std::vector<SketchMatch> matches;
+        matches.reserve(ids_.size());
+
         if (words_per_sketch_ == 0 || dictionary_.empty()) {
-            best.id = ids_.front();
-            best.found = true;
-            return best;
+            for (const std::string& id : ids_) {
+                matches.push_back(SketchMatch{id, 0.0, true});
+            }
+            return selectAdaptiveTopMatches(std::move(matches), min_count, max_count, similarity_ratio);
         }
 
         thread_local std::vector<std::uint64_t> query_words;
@@ -210,7 +262,6 @@ namespace detail {
             ++query_hash_count;
         }
 
-        double best_score = -1.0;
         for (std::size_t row = 0; row < ids_.size(); ++row) {
             const std::uint64_t* ref_bits = bitsets_.data() + row * words_per_sketch_;
             const std::size_t inter = detail::bitsetAndPopcount(
@@ -218,15 +269,9 @@ namespace detail {
             const std::uint32_t denom = std::min(query_hash_count, sketch_hash_counts_[row]);
             const double score = denom == 0 ? 0.0 :
                 static_cast<double>(inter) / static_cast<double>(denom);
-
-            if (!best.found || score > best_score) {
-                best.id = ids_[row];
-                best.similarity = score;
-                best.found = true;
-                best_score = score;
-            }
+            matches.push_back(SketchMatch{ids_[row], score, true});
         }
 
-        return best;
+        return selectAdaptiveTopMatches(std::move(matches), min_count, max_count, similarity_ratio);
     }
 } // namespace mash
