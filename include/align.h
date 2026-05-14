@@ -340,14 +340,14 @@ namespace align {
                                seq_io::SeqWriter& out,
                                seq_io::SeqWriter& out_insertion,
                                cigar::Cigar_t& out_cigar,
-                               int& out_ref_idx,
+                               std::string& out_ref_id,
                                int thread = 0) const;
 
         // 根据一个 chunk 的对齐结果增量更新 profile 计数（不改变 profile 形状）
         void updateProfilesFromChunk(
             const std::vector<seq_io::SeqRecord>& chunk,
             const std::vector<cigar::Cigar_t>& cigar_chunk,
-            const std::vector<int>& ref_idx_chunk);
+            const std::vector<std::string>& ref_id_chunk);
 
         // 将单条 query 按 CIGAR 投影到 profile 列并累加碱基计数，成功返回 true
         static bool applyCigarToProfile(
@@ -425,7 +425,6 @@ namespace align {
         // 参考序列与索引
         seq_io::SeqRecordMap ref_sequences;   // 参考序列集合
         mash::SketchMap ref_sketch;          // 每条参考序列的 MinHash sketch
-        // std::vector<SeedHits> ref_minimizers;  // 每条参考序列的 minimizer 索引
         ProfileMatrixMap ref_profile;    // 参考序列的碱基计数 profile（按列存储，便于向量化）
 
         // 共识序列与索引（构造时预计算，避免重复计算）

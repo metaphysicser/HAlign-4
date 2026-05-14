@@ -56,12 +56,11 @@ namespace align {
                     const std::size_t debug_ref_len = cigar::getRefLength(debug_cigar_ops);
                     const std::size_t debug_qry_len = cigar::getQueryLength(debug_cigar_ops);
                     int ref_len = 0;
-                    for (auto& ref :ref_sequences)
-                    {
-                        if (ref.id == sam_rec.rname) {
-                            ref_len = ref.seq.size();
-                            break;
-                        }
+                    if (sam_rec.rname == consensus_seq.id) {
+                        ref_len = static_cast<int>(consensus_ref.seq.size());
+                    } else if (const auto ref_it = ref_sequences.find(sam_rec.rname);
+                               ref_it != ref_sequences.end()) {
+                        ref_len = static_cast<int>(ref_it->second.seq.size());
                     }
                     if (debug_ref_len != ref_len ||
                         debug_qry_len != fasta_rec.seq.size()) {
