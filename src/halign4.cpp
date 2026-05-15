@@ -5,6 +5,7 @@
 
 #include "align.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cctype>
 #include <cstdlib>
@@ -47,6 +48,10 @@ static void checkOption(Options& opt) {
     }
     if (opt.profile_ref_min_similarity < 0.0 || opt.profile_ref_min_similarity > 1.0) {
         throw std::runtime_error("profile_ref_min_similarity must be in [0, 1]");
+    }
+    if (!opt.output_insertion.empty() &&
+        FilePath(opt.output_insertion).lexically_normal() == FilePath(opt.output).lexically_normal()) {
+        throw std::runtime_error("--output-insertion must be different from -o/--output");
     }
     (void)parseInsertionMergeMode(opt.insertion_merge);
     if (opt.kmer_size > 31) throw std::runtime_error("kmer_size too large (must be <= 31)");
@@ -91,6 +96,13 @@ static void cleanupWorkdir(const Options& opt) {
     } else {
         spdlog::info("Keeping working directory: {}", opt.workdir);
     }
+}
+
+static std::size_t inferAlignmentBatchSize(uint_t sequence_count) {
+    constexpr std::size_t min_batch_size = 1000;
+    constexpr std::size_t max_batch_size = 10000;
+    const std::size_t estimated = static_cast<std::size_t>(sequence_count) / 64U;
+    return std::clamp(estimated, min_batch_size, max_batch_size);
 }
 
 int main(int argc, char** argv) {
@@ -141,8 +153,10 @@ int main(int argc, char** argv) {
             spdlog::info("Reference sequence copied to: {}", consensus_unaligned_file.string());
         }
 
-        // 快速路径：序列数 <= cons_n 且不保留长度时直接输出
-        if (preproc_count <= opt.cons_n && opt.keep_length == false)
+        // 快速路径：序列数 <= cons_n 且不保留长度时直接输出。
+        // 需要过滤参考或输出插入 TSV 时，仍走 RefAligner 合并路径，保证输出选项生效。
+        if (preproc_count <= opt.cons_n && opt.keep_length == false &&
+            !opt.skip_reference_output && opt.output_insertion.empty())
         {
             if (!opt.ref_align_path.empty()) {
                 spdlog::info("Using pre-aligned reference MSA directly: {}", opt.ref_align_path);
@@ -179,24 +193,32 @@ int main(int argc, char** argv) {
         align::RefAligner ref_aligner(opt, ref_path);
 
         // 批大小策略：
-        // - 用户显式传 --batch-size 时，统一覆盖 align 与 merge 的 batch；
-        // - 未传（0）时保持历史行为：seq2profile=128，seq2seq=函数默认值(25600)，merge=25600。
+        // - 用户显式传 --batch-size 时使用用户值；
+        // - 未传时按输入序列数估计，并限制在 [1000, 10000]。
         const std::size_t cli_batch_size = (opt.batch_size > 0)
             ? static_cast<std::size_t>(opt.batch_size)
             : 0U;
-        const std::size_t merge_batch_size = (cli_batch_size > 0) ? cli_batch_size : 25600U;
+        const std::size_t inferred_batch_size = inferAlignmentBatchSize(preproc_count);
+        const std::size_t alignment_batch_size =
+            (cli_batch_size > 0) ? cli_batch_size : inferred_batch_size;
+        const std::size_t merge_batch_size = alignment_batch_size;
 
         // 默认走 seq2profile；仅当用户显式开启 --seq2seq 时切换到 seq2seq。
         if (opt.seq2seq) {
-            spdlog::info("Alignment mode: seq2seq, batch_size={}",
-                         (cli_batch_size > 0 ? cli_batch_size : 25600U));
-            ref_aligner.alignSeq2Seq(opt.input, cli_batch_size);
+            spdlog::info("Alignment mode: seq2seq, batch_size={}", alignment_batch_size);
+            ref_aligner.alignSeq2Seq(opt.input, alignment_batch_size);
         } else {
-            const std::size_t seq2profile_batch_size = (cli_batch_size > 0) ? cli_batch_size : 1000;
-            spdlog::info("Alignment mode: seq2profile, batch_size={}", seq2profile_batch_size);
-            ref_aligner.alignSeq2Profile(opt.input, seq2profile_batch_size);
+            spdlog::info("Alignment mode: seq2profile, batch_size={}", alignment_batch_size);
+            ref_aligner.alignSeq2Profile(opt.input, alignment_batch_size);
         }
-        ref_aligner.mergeAlignedResults(opt.output, merge_batch_size);
+
+        align::MergeOptions merge_options;
+        merge_options.batch_size = merge_batch_size;
+        merge_options.keep_length = opt.keep_length;
+        merge_options.write_reference = !opt.skip_reference_output;
+        merge_options.insertion_tsv_path = FilePath(opt.output_insertion);
+        merge_options.insertion_merge_mode = parseInsertionMergeMode(opt.insertion_merge);
+        ref_aligner.mergeAlignedResults(opt.output, merge_options);
 
         cleanupWorkdir(opt);
 

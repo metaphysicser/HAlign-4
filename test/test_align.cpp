@@ -607,6 +607,45 @@ TEST_SUITE("align") {
 
         fs::remove_all(dir, ec);
     }
+
+    TEST_CASE("CLI setup - parse merge output options") {
+        namespace fs = std::filesystem;
+
+        const fs::path dir = fs::current_path() / "halign4_tests_cli_merge_output_options";
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir, ec);
+        REQUIRE_MESSAGE(!ec, "cannot create temp dir: " << dir.string() << " (" << ec.message() << ")");
+
+        const fs::path input = writeMiniFasta(dir / "input.fasta", "input");
+        const fs::path output = dir / "out.fasta";
+        const fs::path insertion_tsv = dir / "insertions.tsv";
+
+        Options opt;
+        CLI::App app{"halign4"};
+        setupCli(app, opt);
+
+        std::vector<std::string> args = {
+            "halign4",
+            "-i", input.string(),
+            "-o", output.string(),
+            "--skip-reference-output",
+            "--output-insertion", insertion_tsv.string(),
+            "--insertion-merge", "msa"
+        };
+        std::vector<char*> argv;
+        argv.reserve(args.size());
+        for (auto& s : args) {
+            argv.push_back(s.data());
+        }
+
+        REQUIRE_NOTHROW(app.parse(static_cast<int>(argv.size()), argv.data()));
+        CHECK(opt.skip_reference_output);
+        CHECK(opt.output_insertion == insertion_tsv.string());
+        CHECK(opt.insertion_merge == "msa");
+
+        fs::remove_all(dir, ec);
+    }
 }
 
 // ------------------------------------------------------------------

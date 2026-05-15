@@ -238,6 +238,8 @@ struct Options {
     double profile_ref_min_similarity = 0.7; // --profile-ref-min-similarity：Mash ANI 序列相似度阈值
     bool detect_reverse_complement = false; // --detect-rc：自动检测并使用反向互补 query
     std::string insertion_merge = "reference"; // --insertion-merge：reference 或 msa
+    bool skip_reference_output = false; // --skip-reference-output：最终 MSA 不写入参考序列
+    std::string output_insertion; // --output-insertion：输出被投影/删除的插入片段 TSV
 
 	// keep length 相关开关：
 	// - keep_length：保持“第一条/中心序列”的长度不变（其余序列允许按对齐结果变化/填充），适用于只关心输出共识/中心序列长度的场景。
@@ -384,9 +386,9 @@ static void setupCli(CLI::App& app, Options& opt) {
     // --batch-size：对齐阶段批大小。
     // 说明：
     // - 仅影响 alignSeq2Profile/alignSeq2Seq 的分批读取与并行粒度；
-    // - 设为 0 时保持当前模式默认行为（不改变历史默认逻辑）。
+    // - 设为 0 时按输入序列数自动估计。
     app.add_option("--batch-size", opt.batch_size,
-                   "Alignment batch size (0 keeps mode default behavior).")
+                   "Alignment batch size (0 estimates from sequence count).")
         ->default_val(0)
         ->check(CLI::Range(0, 100000000));
 
@@ -433,6 +435,14 @@ static void setupCli(CLI::App& app, Options& opt) {
                    "How non-keep-length insertions are merged: reference or msa.")
         ->default_val("reference")
         ->check(CLI::IsMember({"reference", "reference-guided", "msa", "external-msa"}))
+        ->group("Detailed options");
+
+    app.add_flag("--skip-reference-output,--no-reference-output", opt.skip_reference_output,
+        "Do not write reference sequences to the final aligned FASTA.")
+        ->group("Detailed options");
+
+    app.add_option("--output-insertion", opt.output_insertion,
+                   "Write insertion records to this TSV file.")
         ->group("Detailed options");
 
     // 开关参数：默认关闭，传入 --wfa 时设为 true
@@ -493,6 +503,8 @@ static void logParsedOptions(const Options& opt) {
         {"profile-ref-min-similarity", std::to_string(opt.profile_ref_min_similarity)},
         {"detect-rc", boolToStr(opt.detect_reverse_complement)},
         {"insertion-merge", opt.insertion_merge},
+        {"skip-ref-out", boolToStr(opt.skip_reference_output)},
+        {"output-insertion", toString(opt.output_insertion, valW)},
         {"wfa", boolToStr(opt.wfa)},
         {"seq2seq", boolToStr(opt.seq2seq)},
         {"keep-length", boolToStr(opt.keep_length)},

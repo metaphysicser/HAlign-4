@@ -5,7 +5,6 @@
 #endif
 
 #include <algorithm>
-#include <cmath>
 #include <cstdlib>
 #include <limits>
 #include <stdexcept>
@@ -22,7 +21,8 @@ extern "C" {
 namespace align
 {
     namespace {
-        constexpr std::uint32_t kProfileEqualWeightScale = 1024;
+        constexpr unsigned kProfileEqualWeightShift = 10;
+        constexpr std::uint32_t kProfileEqualWeightScale = 1U << kProfileEqualWeightShift;
 
         char complementBase(char ch)
         {
@@ -202,6 +202,36 @@ namespace align
         return pm;
     }
 
+    ProfileMatrix normalizeProfileEqualWeight(const ProfileMatrix& profile)
+    {
+        if (profile.len < 0 || profile.dim <= 0 ||
+            profile.prof.size() != static_cast<std::size_t>(profile.len) * static_cast<std::size_t>(profile.dim)) {
+            throw std::runtime_error("normalizeProfileEqualWeight: invalid profile shape");
+        }
+
+        ProfileMatrix normalized;
+        normalized.len = profile.len;
+        normalized.dim = profile.dim;
+        normalized.depth = static_cast<int>(kProfileEqualWeightScale);
+        normalized.prof.assign(profile.prof.size(), 0U);
+
+        const std::uint64_t denom = profile.depth > 0
+            ? static_cast<std::uint64_t>(profile.depth)
+            : 1U;
+
+        for (std::size_t i = 0; i < profile.prof.size(); ++i) {
+            const std::uint64_t scaled =
+                (static_cast<std::uint64_t>(profile.prof[i]) << kProfileEqualWeightShift) + (denom / 2U);
+            const std::uint64_t value = scaled / denom;
+            if (value > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) {
+                throw std::runtime_error("normalizeProfileEqualWeight: normalized count overflow");
+            }
+            normalized.prof[i] = static_cast<std::uint32_t>(value);
+        }
+
+        return normalized;
+    }
+
     ProfileMatrix combineProfilesEqualWeight(const std::vector<const ProfileMatrix*>& profiles)
     {
         if (profiles.empty()) {
@@ -226,11 +256,24 @@ namespace align
                 throw std::runtime_error("combineProfilesEqualWeight: profile shape mismatch");
             }
 
-            const double denom = profile->depth > 0 ? static_cast<double>(profile->depth) : 1.0;
+            if (profile->depth == static_cast<int>(kProfileEqualWeightScale)) {
+                for (std::size_t i = 0; i < profile->prof.size(); ++i) {
+                    combined.prof[i] += profile->prof[i];
+                }
+                continue;
+            }
+
+            const std::uint64_t denom = profile->depth > 0
+                ? static_cast<std::uint64_t>(profile->depth)
+                : 1U;
             for (std::size_t i = 0; i < profile->prof.size(); ++i) {
-                const double weighted = static_cast<double>(profile->prof[i]) *
-                                        static_cast<double>(kProfileEqualWeightScale) / denom;
-                combined.prof[i] += static_cast<std::uint32_t>(std::llround(weighted));
+                const std::uint64_t scaled =
+                    (static_cast<std::uint64_t>(profile->prof[i]) << kProfileEqualWeightShift) + (denom / 2U);
+                const std::uint64_t value = scaled / denom;
+                if (value > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) {
+                    throw std::runtime_error("combineProfilesEqualWeight: normalized count overflow");
+                }
+                combined.prof[i] += static_cast<std::uint32_t>(value);
             }
         }
 

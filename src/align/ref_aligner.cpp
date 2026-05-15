@@ -17,21 +17,19 @@
 
 namespace align {
     // 读取参考序列，计算索引，生成共识序列
-        RefAligner::RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path,
-                                                     int kmer_size, int window_size,
-                                                                                                         int sketch_size, int profile_ref_kmer_len, bool noncanonical,
-                                                     int threads, std::string msa_cmd,
-                                                     bool keep_length,
-                                                     bool enable_wfa,
-                                                     const FilePath& ref_aligned_path,
-                                                     std::array<int8_t, 25> score_matrix_in,
-                                                     int gap_open,
-                                                     int gap_extend,
-                                                     int profile_ref_min,
-                                                     int profile_ref_max,
-                                                     double profile_ref_min_similarity,
-                                                     bool detect_reverse_complement,
-                                                     InsertionMergeMode insertion_merge_mode)
+    RefAligner::RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path,
+                           int kmer_size, int window_size,
+                           int sketch_size, int profile_ref_kmer_len, bool noncanonical,
+                           int threads, std::string msa_cmd,
+                           bool enable_wfa,
+                           const FilePath& ref_aligned_path,
+                           std::array<int8_t, 25> score_matrix_in,
+                           int gap_open,
+                           int gap_extend,
+                           int profile_ref_min,
+                           int profile_ref_max,
+                           double profile_ref_min_similarity,
+                           bool detect_reverse_complement)
         : work_dir(work_dir),
           kmer_size(kmer_size),
           window_size(window_size),
@@ -40,7 +38,6 @@ namespace align {
           noncanonical(noncanonical),
           threads(threads),
           msa_cmd(std::move(msa_cmd)),
-          keep_length(keep_length),
           enable_wfa(enable_wfa),
           score_matrix(score_matrix_in),
           gap_open(gap_open),
@@ -48,117 +45,121 @@ namespace align {
           profile_ref_min(profile_ref_min),
           profile_ref_max(profile_ref_max),
           profile_ref_min_similarity(profile_ref_min_similarity),
-          detect_reverse_complement(detect_reverse_complement),
-          insertion_merge_mode(insertion_merge_mode)
+          detect_reverse_complement(detect_reverse_complement)
     {
-	        // 加载参考序列，sketch 在读取完成后并行构建，避免串行 I/O 循环承担重计算。
-	        seq_io::KseqReader reader(ref_fasta_path);
-	        seq_io::SeqRecord rec;
-        	spdlog::info("Loading reference sequences from {}", ref_fasta_path.string());
+        loadReference(ref_fasta_path, ref_aligned_path);
+    }
 
-            std::vector<seq_io::SeqRecord> ref_records;
-	        while (reader.next(rec)) {
-	            ref_records.push_back(std::move(rec));
-	        }
-            const int build_threads = std::max(1, threads > 0 ? threads : omp_get_max_threads());
-            std::vector<mash::Sketch> ref_sketches(ref_records.size());
+    void RefAligner::loadReference(const FilePath& ref_fasta_path, const FilePath& ref_aligned_path)
+    {
+        // 加载参考序列，sketch 在读取完成后并行构建，避免串行 I/O 循环承担重计算。
+        seq_io::KseqReader reader(ref_fasta_path);
+        seq_io::SeqRecord rec;
+        spdlog::info("Loading reference sequences from {}", ref_fasta_path.string());
+
+        std::vector<seq_io::SeqRecord> ref_records;
+        while (reader.next(rec)) {
+            ref_records.push_back(std::move(rec));
+        }
+        const int build_threads = std::max(1, threads > 0 ? threads : omp_get_max_threads());
+        std::vector<mash::Sketch> ref_sketches(ref_records.size());
 
 #pragma omp parallel for default(none) schedule(dynamic) num_threads(build_threads) \
     shared(ref_records, ref_sketches) firstprivate(profile_ref_kmer_len, sketch_size, noncanonical, random_seed)
-            for (std::int64_t i = 0; i < static_cast<std::int64_t>(ref_records.size()); ++i) {
-                ref_sketches[static_cast<std::size_t>(i)] = mash::sketchFromSequence(
-                    ref_records[static_cast<std::size_t>(i)].seq,
-                    static_cast<std::size_t>(profile_ref_kmer_len),
-                    static_cast<std::size_t>(sketch_size),
-                    noncanonical,
-                    random_seed);
-            }
+        for (std::int64_t i = 0; i < static_cast<std::int64_t>(ref_records.size()); ++i) {
+            ref_sketches[static_cast<std::size_t>(i)] = mash::sketchFromSequence(
+                ref_records[static_cast<std::size_t>(i)].seq,
+                static_cast<std::size_t>(profile_ref_kmer_len),
+                static_cast<std::size_t>(sketch_size),
+                noncanonical,
+                random_seed);
+        }
 
-            ref_sequences.reserve(ref_records.size());
-            ref_sketch.reserve(ref_records.size());
-            for (std::size_t i = 0; i < ref_records.size(); ++i) {
-                auto [seq_it, inserted] = ref_sequences.emplace(ref_records[i].id, std::move(ref_records[i]));
-                if (inserted) {
-                    ref_sketch.emplace(seq_it->first, std::move(ref_sketches[i]));
-                }
+        ref_sequences.reserve(ref_records.size());
+        ref_sketch.reserve(ref_records.size());
+        for (std::size_t i = 0; i < ref_records.size(); ++i) {
+            auto [seq_it, inserted] = ref_sequences.emplace(ref_records[i].id, std::move(ref_records[i]));
+            if (inserted) {
+                ref_sketch.emplace(seq_it->first, std::move(ref_sketches[i]));
             }
-            if (ref_sketch.size() > 1) {
-                const std::size_t removed_common_hashes = mash::removeCommonHashesFromSketches(ref_sketch);
-                if (removed_common_hashes != 0) {
-                    spdlog::info("Removed {} hashes shared by all reference sketches", removed_common_hashes);
-                }
+        }
+        if (ref_sketch.size() > 1) {
+            const std::size_t removed_common_hashes = mash::removeCommonHashesFromSketches(ref_sketch);
+            if (removed_common_hashes != 0) {
+                spdlog::info("Removed {} hashes shared by all reference sketches", removed_common_hashes);
             }
-            if (ref_sketch.size() > kSketchBitsetRefThreshold) {
-                ref_sketch_bitset_index.build(ref_sketch, false);
-                spdlog::info("Built reference sketch bitset index: {} refs, {} hash dictionary entries",
-                             ref_sketch_bitset_index.size(),
-                             ref_sketch_bitset_index.dictionarySize());
-            }
-        	spdlog::info("Loaded {} reference sequences", ref_sequences.size());
+        }
+        if (ref_sketch.size() > kSketchBitsetRefThreshold) {
+            ref_sketch_bitset_index.build(ref_sketch, false);
+            spdlog::info("Built reference sketch bitset index: {} refs, {} hash dictionary entries",
+                         ref_sketch_bitset_index.size(),
+                         ref_sketch_bitset_index.dictionarySize());
+        }
+        spdlog::info("Loaded {} reference sequences", ref_sequences.size());
 
-	        // 设置共识序列生成的文件路径
-	        const bool has_prealigned_ref = !ref_aligned_path.empty();
-	        const FilePath consensus_unaligned_file = has_prealigned_ref ? ref_aligned_path : ref_fasta_path;
-	        const FilePath consensus_aligned_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_ALIGNED;
-	        const FilePath consensus_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_FASTA;
-	        const FilePath consensus_json_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_JSON;
+        // 设置共识序列生成的文件路径
+        const bool has_prealigned_ref = !ref_aligned_path.empty();
+        const FilePath consensus_unaligned_file = has_prealigned_ref ? ref_aligned_path : ref_fasta_path;
+        const FilePath consensus_aligned_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_ALIGNED;
+        const FilePath consensus_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_FASTA;
+        const FilePath consensus_json_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_JSON;
 
-	        // 执行 MSA 并生成共识序列
-	        // 说明：
-	        // - 默认路径：对 -r/--ref 提供的原始 FASTA 重新做一次 MSA，再从对齐结果生成共识；
-	        // - 若用户同时提供 --ref-align，则说明这个参考集合已经有现成的 MSA，
-	        //   这里直接复用该 MSA，避免重复对齐，从而节省时间并保持参考坐标不变。
-	        constexpr std::size_t consensus_batch_size = 4096;
-	        if (has_prealigned_ref) {
-	            file_io::copyFile(consensus_unaligned_file, consensus_aligned_file);
-	        } else {
-	            alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, this->msa_cmd, threads);
-	        }
+        // 执行 MSA 并生成共识序列
+        // 说明：
+        // - 默认路径：对 -r/--ref 提供的原始 FASTA 重新做一次 MSA，再从对齐结果生成共识；
+        // - 若用户同时提供 --ref-align，则说明这个参考集合已经有现成的 MSA，
+        //   这里直接复用该 MSA，避免重复对齐，从而节省时间并保持参考坐标不变。
+        constexpr std::size_t consensus_batch_size = 4096;
+        if (has_prealigned_ref) {
+            file_io::copyFile(consensus_unaligned_file, consensus_aligned_file);
+        } else {
+            alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, this->msa_cmd, threads);
+        }
 
-        	seq_io::KseqReader reader2(consensus_aligned_file);
-        	seq_io::SeqRecord rec2;
-            std::vector<seq_io::SeqRecord> aligned_ref_records;
-        	while (reader2.next(rec2))
-        	{
-        		aligned_ref_records.push_back(std::move(rec2));
-        	}
-            std::vector<ProfileMatrix> aligned_ref_profiles(aligned_ref_records.size());
+        seq_io::KseqReader reader2(consensus_aligned_file);
+        seq_io::SeqRecord rec2;
+        std::vector<seq_io::SeqRecord> aligned_ref_records;
+        while (reader2.next(rec2)) {
+            aligned_ref_records.push_back(std::move(rec2));
+        }
+        std::vector<ProfileMatrix> aligned_ref_profiles(aligned_ref_records.size());
 
 #pragma omp parallel for default(none) schedule(dynamic) num_threads(build_threads) \
     shared(aligned_ref_records, aligned_ref_profiles)
-            for (std::int64_t i = 0; i < static_cast<std::int64_t>(aligned_ref_records.size()); ++i) {
-                aligned_ref_profiles[static_cast<std::size_t>(i)] =
-                    ProfileMatrix::fromAlignedSequence(aligned_ref_records[static_cast<std::size_t>(i)].seq);
-            }
+        for (std::int64_t i = 0; i < static_cast<std::int64_t>(aligned_ref_records.size()); ++i) {
+            aligned_ref_profiles[static_cast<std::size_t>(i)] =
+                ProfileMatrix::fromAlignedSequence(aligned_ref_records[static_cast<std::size_t>(i)].seq);
+        }
 
-            ref_profile.reserve(aligned_ref_records.size());
-            for (std::size_t i = 0; i < aligned_ref_records.size(); ++i) {
-                ref_profile.emplace(aligned_ref_records[i].id, std::move(aligned_ref_profiles[i]));
-            }
-	        consensus::ConsensusResult consensus_result = consensus::generateConsensusResult(
-	            consensus_aligned_file, consensus_file, consensus_json_file,
-	            0, threads, consensus_batch_size);
+        ref_profile.reserve(aligned_ref_records.size());
+        for (std::size_t i = 0; i < aligned_ref_records.size(); ++i) {
+            ref_profile.emplace(aligned_ref_records[i].id, std::move(aligned_ref_profiles[i]));
+        }
+        rebuildNormalizedReferenceProfiles();
+        consensus::ConsensusResult consensus_result = consensus::generateConsensusResult(
+            consensus_aligned_file, consensus_file, consensus_json_file,
+            0, threads, consensus_batch_size);
 
-	        consensus_gap_seq.id = "consensus";
-	        consensus_gap_seq.seq = std::move(consensus_result.gap_seq);
-	        consensus_profile = ProfileMatrix::fromConsensusCounts(consensus_result.counts);
+        consensus_gap_seq.id = "consensus";
+        consensus_gap_seq.seq = std::move(consensus_result.gap_seq);
+        consensus_profile = ProfileMatrix::fromConsensusCounts(consensus_result.counts);
 
-        	// 以下变量为seq2seq准备
-        	consensus_seq.id = "consensus";
-        	consensus_seq.seq = std::move(consensus_result.seq);
-	        // 预计算共识序列的 sketch 和 minimizer，避免重复计算
-	        consensus_sketch = mash::sketchFromSequence(
-	            consensus_seq.seq,
-	            static_cast<std::size_t>(profile_ref_kmer_len),
-	            static_cast<std::size_t>(sketch_size),
-	            noncanonical,
-	            random_seed);
+        // 以下变量为 seq2seq 准备。
+        consensus_seq.id = "consensus";
+        consensus_seq.seq = std::move(consensus_result.seq);
+        // 预计算共识序列的 sketch 和 minimizer，避免重复计算。
+        consensus_sketch = mash::sketchFromSequence(
+            consensus_seq.seq,
+            static_cast<std::size_t>(profile_ref_kmer_len),
+            static_cast<std::size_t>(sketch_size),
+            noncanonical,
+            random_seed);
 
-	        consensus_minimizer = minimizer::extractMinimizer(
-	            consensus_seq.seq, kmer_size, window_size, noncanonical);
-	        consensus_gap_minimizer = minimizer::extractMinimizer(
-	            consensus_gap_seq.seq, kmer_size, window_size, noncanonical);
-	    }
+        consensus_minimizer = minimizer::extractMinimizer(
+            consensus_seq.seq, kmer_size, window_size, noncanonical);
+        consensus_gap_minimizer = minimizer::extractMinimizer(
+            consensus_gap_seq.seq, kmer_size, window_size, noncanonical);
+    }
 
     // Options 配置委托构造
     RefAligner::RefAligner(const Options& opt, const FilePath& ref_fasta_path)
@@ -172,7 +173,6 @@ namespace align {
             true,
             opt.threads,
             opt.msa_cmd,
-            opt.keep_length,
             opt.wfa,
             FilePath(opt.ref_align_path),
             opt.score_matrix,
@@ -181,9 +181,66 @@ namespace align {
             opt.profile_ref_min,
             opt.profile_ref_max,
             opt.profile_ref_min_similarity,
-            opt.detect_reverse_complement,
-            parseInsertionMergeMode(opt.insertion_merge))
+            opt.detect_reverse_complement)
     {
+    }
+
+    void RefAligner::rebuildNormalizedReferenceProfiles()
+    {
+        std::vector<std::pair<std::string, const ProfileMatrix*>> profiles;
+        profiles.reserve(ref_profile.size());
+        for (const auto& [id, profile] : ref_profile) {
+            profiles.emplace_back(id, &profile);
+        }
+
+        const int build_threads = std::max(1, threads > 0 ? threads : omp_get_max_threads());
+        std::vector<ProfileMatrix> normalized_profiles(profiles.size());
+
+#pragma omp parallel for default(none) schedule(dynamic) num_threads(build_threads) shared(profiles, normalized_profiles)
+        for (std::int64_t i = 0; i < static_cast<std::int64_t>(profiles.size()); ++i) {
+            normalized_profiles[static_cast<std::size_t>(i)] =
+                normalizeProfileEqualWeight(*profiles[static_cast<std::size_t>(i)].second);
+        }
+
+        normalized_ref_profile.clear();
+        normalized_ref_profile.reserve(profiles.size());
+        for (std::size_t i = 0; i < profiles.size(); ++i) {
+            normalized_ref_profile.emplace(profiles[i].first, std::move(normalized_profiles[i]));
+        }
+    }
+
+    void RefAligner::refreshNormalizedReferenceProfiles(const std::vector<std::string>& ref_ids)
+    {
+        if (ref_ids.empty()) {
+            return;
+        }
+
+        std::vector<std::string> unique_ids = ref_ids;
+        std::sort(unique_ids.begin(), unique_ids.end());
+        unique_ids.erase(std::unique(unique_ids.begin(), unique_ids.end()), unique_ids.end());
+
+        std::vector<const ProfileMatrix*> profiles;
+        profiles.reserve(unique_ids.size());
+        for (const std::string& ref_id : unique_ids) {
+            const auto profile_it = ref_profile.find(ref_id);
+            if (profile_it == ref_profile.end()) {
+                throw std::runtime_error("Reference profile '" + ref_id + "' not found");
+            }
+            profiles.push_back(&profile_it->second);
+        }
+
+        const int build_threads = std::max(1, threads > 0 ? threads : omp_get_max_threads());
+        std::vector<ProfileMatrix> normalized_profiles(unique_ids.size());
+
+#pragma omp parallel for default(none) schedule(dynamic) num_threads(build_threads) shared(profiles, normalized_profiles)
+        for (std::int64_t i = 0; i < static_cast<std::int64_t>(profiles.size()); ++i) {
+            normalized_profiles[static_cast<std::size_t>(i)] =
+                normalizeProfileEqualWeight(*profiles[static_cast<std::size_t>(i)]);
+        }
+
+        for (std::size_t i = 0; i < unique_ids.size(); ++i) {
+            normalized_ref_profile[unique_ids[i]] = std::move(normalized_profiles[i]);
+        }
     }
 
     AlignConfig RefAligner::makeAlignConfig() const
@@ -466,9 +523,9 @@ namespace align {
             out_ref_ids.reserve(selected_matches.size());
 
             for (const mash::SketchMatch& match : selected_matches) {
-                auto profile_it = ref_profile.find(match.id);
-                if (profile_it == ref_profile.end()) {
-                    throw std::runtime_error("Reference profile '" + match.id + "' not found");
+                auto profile_it = normalized_ref_profile.find(match.id);
+                if (profile_it == normalized_ref_profile.end()) {
+                    throw std::runtime_error("Normalized reference profile '" + match.id + "' not found");
                 }
                 selected_profiles.push_back(&profile_it->second);
                 out_ref_ids.push_back(match.id);
@@ -576,6 +633,7 @@ namespace align {
         }
 
         // 串行更新共享 profile：避免在并行区对同一 profile 加锁，减少锁竞争与缓存抖动。
+        std::vector<std::string> dirty_ref_ids;
         for (std::size_t i = 0; i < chunk.size(); ++i) {
             if (cigar_chunk[i].empty()) {
                 continue;
@@ -607,6 +665,7 @@ namespace align {
                 if (applyCigarToProfile(chunk[i].seq, cigar_chunk[i], profile_it->second)) {
                     // depth 表示该 profile 内累计纳入的序列数；不同 profile 合并时会再做等权归一化。
                     ++profile_it->second.depth;
+                    dirty_ref_ids.push_back(ref_id);
                 } else {
 #ifdef _DEBUG
                     spdlog::debug("updateProfilesFromChunk: skip invalid cigar for query={} ref_id={} at i={}",
@@ -615,6 +674,7 @@ namespace align {
                 }
             }
         }
+        refreshNormalizedReferenceProfiles(dirty_ref_ids);
     }
 
     // 批量比对 query 序列 - 并行处理，每线程独立输出

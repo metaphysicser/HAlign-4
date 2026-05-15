@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -524,6 +525,55 @@ namespace {
         return scan;
     }
 
+    std::size_t writeInsertionTsv(const std::vector<FilePath>& insertion_sam_paths,
+                                  const ReferenceContext& context,
+                                  const FilePath& insertion_tsv_path)
+    {
+        if (insertion_tsv_path.empty()) {
+            return 0;
+        }
+
+        file_io::ensureParentDirExists(insertion_tsv_path);
+        std::ofstream out(insertion_tsv_path, std::ios::out | std::ios::trunc);
+        if (!out) {
+            throw std::runtime_error("failed to open insertion TSV: " + insertion_tsv_path.string());
+        }
+
+        out << "query_id\tref_id\tref_slot\tref_pos_1based_after\tinsertion_length\tinsertion_sequence\n";
+
+        std::size_t rows = 0;
+        for (const FilePath& sam_path : insertion_sam_paths) {
+            if (!samPathHasRecords(sam_path)) {
+                continue;
+            }
+
+            seq_io::SamReader reader(sam_path);
+            seq_io::SamRecord sam_rec;
+            while (reader.next(sam_rec)) {
+                const CoordinateTransform& transform = context.transformFor(sam_rec.rname);
+                const std::vector<InsertionSegment> segments =
+                    collectInsertionSegments(sam_rec, transform);
+                for (const InsertionSegment& segment : segments) {
+                    out << sam_rec.qname << '\t'
+                        << sam_rec.rname << '\t'
+                        << segment.slot << '\t'
+                        << segment.slot << '\t'
+                        << segment.bases.size() << '\t'
+                        << segment.bases << '\n';
+                    ++rows;
+                }
+            }
+        }
+
+        out.flush();
+        if (!out) {
+            throw std::runtime_error("failed to write insertion TSV: " + insertion_tsv_path.string());
+        }
+
+        spdlog::info("Insertion TSV written: {} rows, {}", rows, insertion_tsv_path.string());
+        return rows;
+    }
+
     seq_io::SeqRecord projectSamRecord(const seq_io::SamRecord& sam_rec,
                                        const ReferenceContext& context,
                                        const std::vector<std::size_t>& insertion_widths,
@@ -740,7 +790,7 @@ namespace {
         }
     }
 
-    void RefAligner::mergeAlignedResults(const FilePath output, std::size_t batch_size)
+    void RefAligner::mergeAlignedResults(const FilePath output, const MergeOptions& options)
     {
         ProgressBar progress("merge");
 
@@ -772,6 +822,11 @@ namespace {
             context.ref_transforms.emplace(ref_id, makeTransformFromCigar(std::move(ref_cigar)));
         }
 
+        if (!options.insertion_tsv_path.empty() &&
+            options.insertion_tsv_path.lexically_normal() == output.lexically_normal()) {
+            throw std::runtime_error("Insertion TSV output must be different from final FASTA output");
+        }
+
         spdlog::info("Writing final MSA FASTA: {}", output.string());
         seq_io::SeqWriter final_writer(output, U_MAX);
         WriteState state;
@@ -780,15 +835,26 @@ namespace {
         const std::vector<FilePath> normal_paths = outs_path;
         const std::vector<FilePath> all_query_paths = concatPaths(insertion_paths, normal_paths);
 
-        if (keep_length) {
+        writeInsertionTsv(insertion_paths, context, options.insertion_tsv_path);
+
+        const auto write_references_if_requested =
+            [&](const std::vector<std::size_t>& insertion_widths) {
+                if (!options.write_reference) {
+                    spdlog::info("Reference output disabled; skipping reference records");
+                    return;
+                }
+                writeReferenceRecords(final_writer, consensus_aligned_file, context,
+                                      insertion_widths, state, progress);
+            };
+
+        if (options.keep_length) {
             spdlog::info("Merge mode: keep-length reference projection");
             const std::vector<std::size_t> insertion_widths = zeroInsertionWidths(context.baseLength());
-            writeReferenceRecords(final_writer, consensus_aligned_file, context,
-                                  insertion_widths, state, progress);
+            write_references_if_requested(insertion_widths);
             writeProjectedSamPaths(all_query_paths, context, insertion_widths,
-                                   false, batch_size, threads,
+                                   false, options.batch_size, threads,
                                    final_writer, state, progress);
-        } else if (insertion_merge_mode == InsertionMergeMode::reference_guided) {
+        } else if (options.insertion_merge_mode == InsertionMergeMode::reference_guided) {
             spdlog::info("Merge mode: reference-guided insertion expansion");
             const InsertionWidthScan scan =
                 scanReferenceGuidedInsertionWidths(insertion_paths, context);
@@ -796,13 +862,12 @@ namespace {
                          scan.records,
                          expandedLength(context.baseLength(), scan.widths));
 
-            writeReferenceRecords(final_writer, consensus_aligned_file, context,
-                                  scan.widths, state, progress);
+            write_references_if_requested(scan.widths);
             writeProjectedSamPaths(insertion_paths, context, scan.widths,
-                                   true, batch_size, threads,
+                                   true, options.batch_size, threads,
                                    final_writer, state, progress);
             writeProjectedSamPaths(normal_paths, context, scan.widths,
-                                   false, batch_size, threads,
+                                   false, options.batch_size, threads,
                                    final_writer, state, progress);
         } else {
             spdlog::info("Merge mode: external insertion MSA");
@@ -812,10 +877,9 @@ namespace {
             if (insertion_count == 0) {
                 spdlog::info("No insertion-bearing records found; external insertion MSA skipped");
                 const std::vector<std::size_t> insertion_widths = zeroInsertionWidths(context.baseLength());
-                writeReferenceRecords(final_writer, consensus_aligned_file, context,
-                                      insertion_widths, state, progress);
+                write_references_if_requested(insertion_widths);
                 writeProjectedSamPaths(normal_paths, context, insertion_widths,
-                                       false, batch_size, threads,
+                                       false, options.batch_size, threads,
                                        final_writer, state, progress);
             } else {
                 alignConsensusSequence(insertion_fasta_path, aligned_insertion_fasta,
@@ -826,12 +890,11 @@ namespace {
                     insertionWidthsFromAlignedReference(
                         context.base_reference_seq, aligned_reference.seq);
 
-                writeReferenceRecords(final_writer, consensus_aligned_file, context,
-                                      insertion_widths, state, progress);
+                write_references_if_requested(insertion_widths);
                 writeAlignedInsertionRecords(final_writer, aligned_insertion_fasta,
                                              state, progress);
                 writeProjectedSamPaths(normal_paths, context, insertion_widths,
-                                       false, batch_size, threads,
+                                       false, options.batch_size, threads,
                                        final_writer, state, progress);
             }
         }
@@ -840,6 +903,13 @@ namespace {
         progress.done();
         spdlog::info("Merge completed: {} sequences total, length {}",
                     state.seq_count, state.expected_length);
+    }
+
+    void RefAligner::mergeAlignedResults(const FilePath output, std::size_t batch_size)
+    {
+        MergeOptions options;
+        options.batch_size = batch_size;
+        mergeAlignedResults(output, options);
     }
 
     void RefAligner::removeRefGapColumns(

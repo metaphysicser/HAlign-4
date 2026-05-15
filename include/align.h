@@ -86,6 +86,7 @@ namespace align {
 
 	using ProfileMatrixMap = std::unordered_map<std::string, ProfileMatrix>;
 
+    ProfileMatrix normalizeProfileEqualWeight(const ProfileMatrix& profile);
     ProfileMatrix combineProfilesEqualWeight(const std::vector<const ProfileMatrix*>& profiles);
     std::string profileToGappedSequence(const ProfileMatrix& profile);
     seq_io::SeqRecord reverseComplementRecord(const seq_io::SeqRecord& rec);
@@ -167,6 +168,14 @@ namespace align {
                                   align::AlignConfig cfg = align::AlignConfig{});
 
 
+    struct MergeOptions {
+        std::size_t batch_size = 25600;
+        bool keep_length = false;
+        bool write_reference = true;
+        FilePath insertion_tsv_path;
+        InsertionMergeMode insertion_merge_mode = InsertionMergeMode::reference_guided;
+    };
+
     // 参考序列比对器：批量比对 query，并合并生成最终 MSA
     class RefAligner
     {
@@ -177,7 +186,6 @@ namespace align {
                    int sketch_size = 30000, int profile_ref_kmer_len = 10,
                    bool noncanonical = true,
                    int threads = 1, std::string msa_cmd = "",
-                   bool keep_length = false,
                    bool enable_wfa = false,
                    const FilePath& ref_aligned_path = FilePath(),
                    std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX,
@@ -186,8 +194,7 @@ namespace align {
                    int profile_ref_min = 15,
                    int profile_ref_max = 40,
                    double profile_ref_min_similarity = 0.7,
-                   bool detect_reverse_complement = false,
-                   InsertionMergeMode insertion_merge_mode = InsertionMergeMode::reference_guided);
+                   bool detect_reverse_complement = false);
 
         // Options 构造（推荐）
         RefAligner(const Options& opt, const FilePath& ref_fasta_path);
@@ -199,6 +206,7 @@ namespace align {
         void alignSeq2Profile(const FilePath& qry_fasta_path, std::size_t batch_size = 25600);
 
         // 合并 SAM 与中间结果，输出最终 MSA
+        void mergeAlignedResults(const FilePath output, const MergeOptions& options);
         void mergeAlignedResults(const FilePath output, std::size_t batch_size = 25600);
 
         // 全局比对统一入口（保留 similarity/minimizer 参数以兼容后续策略）
@@ -223,6 +231,10 @@ namespace align {
 
 
         private:
+        void loadReference(const FilePath& ref_fasta_path, const FilePath& ref_aligned_path);
+        void rebuildNormalizedReferenceProfiles();
+        void refreshNormalizedReferenceProfiles(const std::vector<std::string>& ref_ids);
+
         // 单条 query 比对并写入 SAM（每线程 writer 由调用方管理）
         void alignOneQueryToRef(const seq_io::SeqRecord& q,
                                seq_io::SeqWriter& out,
@@ -273,6 +285,7 @@ namespace align {
         mash::SketchMap ref_sketch;          // 每条参考序列的 MinHash sketch
         mash::SketchBitsetIndex ref_sketch_bitset_index;
         ProfileMatrixMap ref_profile;    // 参考序列的碱基计数 profile（按列存储，便于向量化）
+        ProfileMatrixMap normalized_ref_profile; // 等权归一化后的 profile cache
 
         // 共识序列与索引（构造时预计算，避免重复计算）
         seq_io::SeqRecord consensus_gap_seq;
@@ -294,7 +307,6 @@ namespace align {
         int threads = 1;            // OpenMP 线程数（<=0 时由运行时决定）
         std::string msa_cmd;        // 外部 MSA 命令模板
 
-        bool keep_length = false; // true：裁剪“共识为 gap”的列
         bool enable_wfa = false;  // true：允许使用 WFA 路径
         bool profile_alignment_mode = false; // true：本轮 SAM 以 profile/带 gap 共识坐标为参考
         std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX;
@@ -304,7 +316,6 @@ namespace align {
         int profile_ref_max = 40;
         double profile_ref_min_similarity = 0.7;
         bool detect_reverse_complement = false;
-        InsertionMergeMode insertion_merge_mode = InsertionMergeMode::reference_guided;
 
         // 是否考虑反向互补
         bool noncanonical = true;
