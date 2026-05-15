@@ -628,7 +628,7 @@ namespace {
         const std::vector<FilePath>& insertion_sam_paths,
         const ReferenceContext& context,
         const FilePath& msa_dir,
-        const std::string& msa_cmd,
+        const std::string& msa_tool,
         int threads)
     {
         ReferenceGuidedInsertionMsa result;
@@ -676,7 +676,7 @@ namespace {
         }
         file_io::ensureDirectoryExists(msa_dir, "reference-guided insertion MSA dir");
 
-        const std::string effective_msa_cmd = msa_cmd.empty() ? DEFAULT_MSA_CMD : msa_cmd;
+        const std::string effective_msa_tool = msa_tool.empty() ? DEFAULT_MSA_CMD : msa_tool;
 
         for (const auto& [slot, entries] : slot_groups) {
             if (entries.empty()) {
@@ -697,7 +697,7 @@ namespace {
                 msa_dir / ("slot_" + std::to_string(slot) + "_aligned.fasta");
 
             writeSlotInsertionMsaInput(input_path, entries);
-            alignConsensusSequence(input_path, aligned_path, effective_msa_cmd, threads);
+            alignConsensusSequence(input_path, aligned_path, effective_msa_tool, threads);
             file_io::requireRegularFile(aligned_path, "aligned insertion MSA");
 
             result.widths[slot] =
@@ -1179,7 +1179,7 @@ namespace {
             const ReferenceGuidedInsertionMsa insertion_msa =
                 alignReferenceGuidedInsertionSlots(
                     insertion_paths, context, reference_guided_insertion_dir,
-                    msa_cmd, threads);
+                    msa_tool, threads);
             spdlog::info("Reference-guided insertion MSA: {} records, {} insertion segments, {} externally aligned slots, final length {}",
                          insertion_msa.records,
                          insertion_msa.segments,
@@ -1208,7 +1208,7 @@ namespace {
                                        final_writer, state, progress);
             } else {
                 alignConsensusSequence(insertion_fasta_path, aligned_insertion_fasta,
-                                      msa_cmd, threads);
+                                      msa_tool, threads);
                 const seq_io::SeqRecord aligned_reference =
                     readFirstFastaRecord(aligned_insertion_fasta);
                 const std::vector<std::size_t> insertion_widths =

@@ -77,18 +77,18 @@ static constexpr std::array<int8_t, 25> DEFAULT_DNA5_SCORE_MATRIX = {
 };
 
 // ------------------------------------------------------------------
-// resolveMsaCmdTemplate：把用户在 -p/--msa-cmd 中输入的内容解析成“最终命令模板”。
+// resolveMsaToolTemplate：把用户在 --msa-tool 中输入的内容解析成“最终命令模板”。
 //
 // 需求：
 // - 当用户输入 minipoa / mafft / clustalo 时，自动使用对应的内置模板命令；
 // - 当用户输入的是自定义模板（包含 {input}/{output} 等占位符）时，保持原样；
-// - 当用户不输入 -p 时，沿用 DEFAULT_MSA_CMD，不改变现有默认行为。
+// - 当用户不输入 --msa-tool 时，沿用 DEFAULT_MSA_CMD，不改变现有默认行为。
 
 // 设计说明（正确性/可用性）：
-// - 不能再把 -p 当作“文件路径”去校验（ExistingFile / requireRegularFile），因为这些工具名通常依赖 PATH。
+// - 不能再把 --msa-tool 当作“文件路径”去校验（ExistingFile / requireRegularFile），因为这些工具名通常依赖 PATH。
 // - 这里只对“完全等于关键字”的情况做映射，避免误伤用户自定义命令（例如 "mafft --auto ..."）。
 // ------------------------------------------------------------------
-inline std::string resolveMsaCmdTemplate(const std::string& user_value) {
+inline std::string resolveMsaToolTemplate(const std::string& user_value) {
     // trim：去除两端空白，避免用户误输入空格导致关键字匹配失败
     const auto start = user_value.find_first_not_of(" \t\n\r");
     if (start == std::string::npos) {
@@ -212,34 +212,34 @@ struct Options {
 	std::string workdir;        // -w：工作目录，所有中间文件（data/raw, data/clean 等）放在该目录下
 
 	// 可选参数：参考序列、MSA 命令模板
-	std::string ref_path;       // -r：可选，指定参考/中心序列文件路径，若指定则绕过自动选择
-    std::string ref_align_path; // --ref-align：与 -r/--ref 对应的“已比对 MSA”文件路径
-	std::string msa_cmd;        // -p：用于对共识序列做 MSA 的命令模板（可以包含 {input} {output} {thread} 占位符）
+    std::string reference_path;       // -r/--reference：可选，指定参考/中心序列文件路径，若指定则绕过自动选择
+    std::string reference_msa_path; // --reference-msa：与 -r/--reference 对应的“已比对 MSA”文件路径
+	std::string msa_tool;        // --msa-tool：用于对共识序列做 MSA 的命令模板（可以包含 {input} {output} {thread} 占位符）
 
 	// 并行与算法参数
 	int threads = get_default_threads(); // -t：线程数，默认为 CPU 核心数
-	int kmer_size = 19;         // --kmer-size：用于归类/聚类的 k-mer 大小（后续步骤使用）
-	int kmer_window = 19;       // --kmer-window：minimizer 窗口大小 w（以 k-mer 为单位）
-	int cons_n = 1000;          // --cons-n：挑选用于共识计算的序列数量（Top-K by length）
+	int minimizer_size = 19;         // --minimizer-size：用于 minimizer/锚点的 k-mer 大小
+	int minimizer_window = 19;       // --minimizer-window：minimizer 窗口大小 w（以 k-mer 为单位）
+	int consensus_num = 1000;          // --consensus-num：挑选用于共识计算的序列数量（Top-K by length）
 	int sketch_size = 3000;     // --sketch-size：用于 sketch 的大小（默认 3000）
     // 说明：将 profile reference search 的 sketch k-mer 大小与 minimizer 的 k-mer 大小解耦。
-    // - kmer_size 仍用于 minimizer/锚点；
-    // - profile_ref_kmer_len 仅用于 mash::sketchFromSequence，默认 10。
-    int profile_ref_kmer_len = 10; // --profile-ref-kmer-len：用于 profile reference search 的 sketch k-mer 大小
+    // - minimizer_size 仍用于 minimizer/锚点；
+    // - sketch_kmer_size 仅用于 mash::sketchFromSequence，默认 10。
+    int sketch_kmer_size = 10; // --sketch-kmer-size：用于 profile reference search 的 sketch k-mer 大小
 	int batch_size = 0;         // --batch-size：对齐批大小；0 表示按模式使用内置默认值
-	bool wfa = false;           // --wfa：启用 WFA 开关（默认关闭，保证现有行为不变）
+	bool enable_wfa = false;           // --enable-wfa：启用 WFA 开关（默认关闭，保证现有行为不变）
 	bool seq2seq = false;       // --seq2seq：开启后使用 seq2seq 比对路径；默认使用 seq2profile
-    std::string score_path;     // -s/--score：可选 DNA5 打分矩阵文件路径
+    std::string score_matrix_path;     // --score-matrix：可选 DNA5 打分矩阵文件路径
     std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX;
     int gap_open = 10;          // --gap-open：gap open 罚分
     int gap_extend = 2;         // --gap-extend：gap extend 罚分
-    int profile_ref_min = 15;   // --profile-ref-min：每条 query 至少使用的参考 profile 数
-    int profile_ref_max = 40;   // --profile-ref-max：最多使用的参考 profile 数
-    double profile_ref_min_similarity = 0.7; // --profile-ref-min-similarity：Mash ANI 序列相似度阈值
-    bool detect_reverse_complement = false; // --detect-rc：自动检测并使用反向互补 query
+    int min_profile_references = 15;   // --min-profile-references：每条 query 至少使用的参考 profile 数
+    int max_profile_references = 40;   // --max-profile-references：最多使用的参考 profile 数
+    double min_profile_reference_similarity = 0.7; // --min-profile-reference-similarity：Mash ANI 序列相似度阈值
+    bool auto_strand = false; // --auto-strand：自动检测并使用反向互补 query
     std::string insertion_merge = "reference"; // --insertion-merge：reference 或 msa
-    bool skip_reference_output = false; // --skip-reference-output：最终 MSA 不写入参考序列
-    std::string output_insertion; // --output-insertion：输出被投影/删除的插入片段 TSV
+    bool no_reference_output = false; // --no-reference-output：最终 MSA 不写入参考序列
+    std::string insertions_output; // --insertions-output：输出被投影/删除的插入片段 TSV
 
 	// keep length 相关开关：
 	// - keep_length：保持“第一条/中心序列”的长度不变（其余序列允许按对齐结果变化/填充），适用于只关心输出共识/中心序列长度的场景。
@@ -253,7 +253,7 @@ struct Options {
 // setupCli：定义 CLI 参数并绑定到 Options
 // 注释说明：
 // - 使用 CLI11 库实现参数解析，支持短参数/长参数与基本校验（例如 ExistingFile）
-// - 对于像 -p/--msa-cmd 这类可能是可执行名（而非完整路径）的参数，ExistingFile 会拒绝仅命令名的情况；
+// - 对于像 --msa-tool 这类可能是可执行名（而非完整路径）的参数，ExistingFile 会拒绝仅命令名的情况；
 //   如果希望允许命令名（在 PATH 中解析），可以去掉 check(CLI::ExistingFile) 或改为用户层面的更宽容判断。
 static void setupCli(CLI::App& app, Options& opt) {
     app.description("HAlign 4: A New Strategy for Rapidly Aligning Millions of Sequences");
@@ -300,68 +300,68 @@ static void setupCli(CLI::App& app, Options& opt) {
     // - 不提供时：程序会在预处理阶段自动选择并生成共识/中心序列；
     // - 提供时：会使用该序列作为参考（并在 workdir 中进行统一管理）。
     // 典型用途：COVID 数据集里可以用 covid-ref 的第一条（武汉参考）作为 center。
-    app.add_option("-r,--ref", opt.ref_path,
+    app.add_option("-r,--reference", opt.reference_path,
                    "Center/reference sequence in FASTA (optional). If not set, a consensus/center is generated.")
         ->check(CLI::ExistingFile);
 
-    // --ref-align：与 -r/--ref 配套的“已对齐 MSA”文件。
+    // --reference-msa：与 -r/--reference 配套的“已对齐 MSA”文件。
     // 设计目标：
     // - 当用户已经为 -r 准备好了比对结果时，可以直接复用该 MSA，避免再次运行 MSA 工具；
-    // - 仍然保留 -r 作为“参考/中心序列 FASTA”的入口，保持旧行为不变；
+    // - 仍然保留 -r/--reference 作为“参考/中心序列 FASTA”的入口，保持旧行为不变；
     // - 该参数不是可执行文件，也不是普通的“可选字符串”，因此直接按存在文件路径校验。
-    app.add_option("-a,--align-ref,--ref-align", opt.ref_align_path,
-                   "Pre-aligned MSA file for the reference set provided by -r/--ref.")
+    app.add_option("--reference-msa", opt.reference_msa_path,
+                   "Pre-aligned MSA file for the reference set provided by -r/--reference.")
         ->check(CLI::ExistingFile);
 
-    // 如果 -p 是“可执行文件路径”，ExistingFile 通常也能用；
+    // 如果 --msa-tool 是“可执行文件路径”，ExistingFile 通常也能用；
     // 若你希望允许仅命令名（在 PATH 中），这里就不要 check
-    // msa-cmd：支持关键字或自定义命令模板。
+    // msa-tool：支持关键字或自定义命令模板。
     // - 关键字：minipoa / mafft / clustalo
     // - 自定义模板：例如 "mafft --thread {thread} --auto {input} > {output}"
     // 注意：这里不能使用 ExistingFile 校验，否则关键字/命令名会被错误拒绝。
-    // -p/--msa-cmd：高质量 MSA 工具（用于对共识/插入序列进行高质量对齐）。
+    // --msa-tool：高质量 MSA 工具（用于对共识/插入序列进行高质量对齐）。
     // 支持两种形式：
     // 1) 关键字：minipoa / mafft / clustalo
     //    - 输入关键字后，程序会自动展开为内置模板（见 MINIPOA_CMD/MAFFT_MSA_CMD/CLUSTALO_MSA_CMD）；
     // 2) 自定义“命令模板字符串”：必须至少包含 {input} 和 {output}；可选包含 {thread}。
     //    - 例如："mafft --thread {thread} --auto {input} > {output}"
     // 注意：
-    // - 默认使用 minipoa（不传 -p 等价于 -p minipoa）；
+    // - 默认使用 minipoa（不传 --msa-tool 等价于 --msa-tool minipoa）；
     // - 该命令会在参数校验阶段用一个 tiny.fasta 做一次 smoke test，若环境缺少该工具会直接报错。
-    app.add_option("-p,--msa-cmd", opt.msa_cmd,
+    app.add_option("--msa-tool", opt.msa_tool,
                    "High-quality MSA method: keyword {minipoa|mafft|clustalo} or a custom command template containing {input} and {output} (optional {thread}).");
 
-    // -t/--thread：线程数。
+    // -t/--threads：线程数。
     // 说明：
     // - 默认值为硬件并发数（std::thread::hardware_concurrency）；
     // - 影响预处理、比对以及外部 MSA 命令中的 {thread} 替换。
-    app.add_option("-t,--thread", opt.threads, "Number of threads.")
+    app.add_option("-t,--threads", opt.threads, "Number of threads.")
         ->default_val(get_default_threads())
         ->check(CLI::Range(1, 100000));
 
-    // --kmer-size：k-mer 大小。
+    // --minimizer-size：minimizer k-mer 大小。
     // 说明：
     // - 用于 minimizer/哈希相关流程的参数；一般无需改动。
     // - 合法范围 [4,31]（与部分位运算/编码实现约束一致）。
-    app.add_option("--kmer-size", opt.kmer_size, "K-mer size used in sketch/minimizer.")
+    app.add_option("--minimizer-size", opt.minimizer_size, "K-mer size used by minimizer seeding.")
         ->default_val(19)
         ->check(CLI::Range(4, 31))
         ->group("Detailed options");
 
 
-    // --kmer-window：minimizer 窗口大小 w（单位：k-mer 数）。
+    // --minimizer-window：minimizer 窗口大小 w（单位：k-mer 数）。
     // 说明：w 越大，minimizer 更稀疏；w 越小，种子更密集但可能更慢。
-    app.add_option("--kmer-window", opt.kmer_window,
+    app.add_option("--minimizer-window", opt.minimizer_window,
                    "Minimizer window size w (in number of k-mers).")
         ->default_val(19)
         ->check(CLI::Range(1, 1000000))
         ->group("Detailed options");
 
-    // --cons-n：用于生成共识/中心序列的 Top-N（按长度挑选）。
+    // --consensus-num：用于生成共识/中心序列的 Top-N（按长度挑选）。
     // 说明：
-    // - 输入序列数 <= cons_n 时，程序会直接调用外部 MSA 对全部序列做一次对齐（快速路径）；
-    // - 输入序列数远大于 cons_n 时，先用 Top-N 生成共识，再进行分批/参考比对。
-    app.add_option("--cons-n", opt.cons_n,
+    // - 输入序列数 <= consensus_num 时，程序会直接调用外部 MSA 对全部序列做一次对齐（快速路径）；
+    // - 输入序列数远大于 consensus_num 时，先用 Top-N 生成共识，再进行分批/参考比对。
+    app.add_option("--consensus-num", opt.consensus_num,
                    "Number of sequences used to build the consensus/center (Top-N by length).")
         ->default_val(1000)
         ->check(CLI::Range(1, 1000000))
@@ -374,11 +374,11 @@ static void setupCli(CLI::App& app, Options& opt) {
         ->check(CLI::Range(1, 10000000))
         ->group("Detailed options");
 
-    // --profile-ref-kmer-len：仅用于 profile reference search 的 sketch 构建。
+    // --sketch-kmer-size：仅用于 profile reference search 的 sketch 构建。
     // 说明：
-    // - 该参数不会影响 minimizer 的 k（minimizer 仍使用 --kmer-size）；
+    // - 该参数不会影响 minimizer 的 k（minimizer 仍使用 --minimizer-size）；
     // - 这样可以在不改变 anchor 密度的前提下独立调节 sketch 稳定性。
-    app.add_option("--profile-ref-kmer-len", opt.profile_ref_kmer_len,
+    app.add_option("--sketch-kmer-size", opt.sketch_kmer_size,
                    "K-mer size used specifically for profile reference mash sketch search.")
         ->default_val(10)
         ->check(CLI::Range(4, 31))
@@ -392,7 +392,7 @@ static void setupCli(CLI::App& app, Options& opt) {
         ->default_val(0)
         ->check(CLI::Range(0, 100000000));
 
-    app.add_option("-s,--score", opt.score_path,
+    app.add_option("--score-matrix", opt.score_matrix_path,
                    "DNA5 alignment scoring matrix file for A/C/G/T/N (25 signed int8 scores).")
         ->check(CLI::ExistingFile)
         ->group("Detailed options");
@@ -409,25 +409,25 @@ static void setupCli(CLI::App& app, Options& opt) {
         ->check(CLI::Range(0, 127))
         ->group("Detailed options");
 
-    app.add_option("--profile-ref-min", opt.profile_ref_min,
+    app.add_option("--min-profile-references", opt.min_profile_references,
                    "Minimum number of mash-ranked reference profiles to combine.")
         ->default_val(15)
         ->check(CLI::Range(1, 100000))
         ->group("Detailed options");
 
-    app.add_option("--profile-ref-max", opt.profile_ref_max,
+    app.add_option("--max-profile-references", opt.max_profile_references,
                    "Maximum number of mash-ranked reference profiles to combine.")
         ->default_val(40)
         ->check(CLI::Range(1, 100000))
         ->group("Detailed options");
 
-    app.add_option("--profile-ref-min-similarity", opt.profile_ref_min_similarity,
-                   "Minimum Mash ANI sequence similarity for references after --profile-ref-min.")
+    app.add_option("--min-profile-reference-similarity", opt.min_profile_reference_similarity,
+                   "Minimum Mash ANI sequence similarity for references after --min-profile-references.")
         ->default_val(0.7)
         ->check(CLI::Range(0.0, 1.0))
         ->group("Detailed options");
 
-    app.add_flag("--detect-rc,--detect-reverse-complement", opt.detect_reverse_complement,
+    app.add_flag("--auto-strand", opt.auto_strand,
         "Use the reverse-complemented query when it is more similar than the forward query.")
         ->group("Detailed options");
 
@@ -437,25 +437,26 @@ static void setupCli(CLI::App& app, Options& opt) {
         ->check(CLI::IsMember({"reference", "reference-guided", "msa", "external-msa"}))
         ->group("Detailed options");
 
-    app.add_flag("--skip-reference-output,--no-reference-output", opt.skip_reference_output,
+    app.add_flag("--no-reference-output", opt.no_reference_output,
         "Do not write reference sequences to the final aligned FASTA.")
         ->group("Detailed options");
 
-    app.add_option("--output-insertion", opt.output_insertion,
+    app.add_option("--insertions-output", opt.insertions_output,
                    "Write insertion records to this TSV file.")
         ->group("Detailed options");
 
-    // 开关参数：默认关闭，传入 --wfa 时设为 true
-    app.add_flag("--wfa", opt.wfa,
+    // 开关参数：默认关闭，传入 --enable-wfa 时设为 true
+    app.add_flag("--enable-wfa", opt.enable_wfa,
         "Enable WFA alignment path (default: disabled).")
         ->group("Detailed options");
 
     // 比对模式开关：默认走 seq2profile，开启后切换为 seq2seq。
     app.add_flag("--seq2seq", opt.seq2seq,
-        "Use seq2seq alignment pipeline instead of seq2profile (default: seq2profile).");
+        "Use seq2seq alignment pipeline instead of seq2profile (default: seq2profile).")
+        ->group("");
 
 
-    app.add_flag("--keep-length", opt.keep_length,
+    app.add_flag("-k,--keep-length", opt.keep_length,
         "Keep all reference sequences lengths unchanged. ");
 
     // workdir 管理：是否在完成后保留工作目录
@@ -477,7 +478,7 @@ static void logParsedOptions(const Options& opt) {
 
     auto boolToStr = [](bool b) { return b ? "true" : "false"; };
 
-    const size_t keyW = 14;
+    const size_t keyW = 34;
     const size_t valW = 60;
     const size_t innerW = keyW + 3 + valW; // "key : value"
 
@@ -485,27 +486,27 @@ static void logParsedOptions(const Options& opt) {
         {"input", toString(opt.input, valW)},
         {"output", toString(opt.output, valW)},
         {"workdir", toString(opt.workdir, valW)},
-        {"ref", toString(opt.ref_path, valW)},
-        {"ref-align", toString(opt.ref_align_path, valW)},
-        {"msa_cmd", toString(opt.msa_cmd, valW)},
+        {"reference", toString(opt.reference_path, valW)},
+        {"reference-msa", toString(opt.reference_msa_path, valW)},
+        {"msa-tool", toString(opt.msa_tool, valW)},
         {"threads", std::to_string(opt.threads)},
-        {"kmer-size", std::to_string(opt.kmer_size)},
-        {"profile-ref-kmer-len", std::to_string(opt.profile_ref_kmer_len)},
-        {"kmer-window", std::to_string(opt.kmer_window)},
-        {"cons_n", std::to_string(opt.cons_n)},
-        {"sketch_size", std::to_string(opt.sketch_size)},
+        {"minimizer-size", std::to_string(opt.minimizer_size)},
+        {"minimizer-window", std::to_string(opt.minimizer_window)},
+        {"consensus-num", std::to_string(opt.consensus_num)},
+        {"sketch-size", std::to_string(opt.sketch_size)},
+        {"sketch-kmer-size", std::to_string(opt.sketch_kmer_size)},
         {"batch-size", std::to_string(opt.batch_size)},
-        {"score", toString(opt.score_path, valW)},
+        {"score-matrix", toString(opt.score_matrix_path, valW)},
         {"gap-open", std::to_string(opt.gap_open)},
         {"gap-extend", std::to_string(opt.gap_extend)},
-        {"profile-ref-min", std::to_string(opt.profile_ref_min)},
-        {"profile-ref-max", std::to_string(opt.profile_ref_max)},
-        {"profile-ref-min-similarity", std::to_string(opt.profile_ref_min_similarity)},
-        {"detect-rc", boolToStr(opt.detect_reverse_complement)},
+        {"min-profile-references", std::to_string(opt.min_profile_references)},
+        {"max-profile-references", std::to_string(opt.max_profile_references)},
+        {"min-profile-reference-similarity", std::to_string(opt.min_profile_reference_similarity)},
+        {"auto-strand", boolToStr(opt.auto_strand)},
         {"insertion-merge", opt.insertion_merge},
-        {"skip-ref-out", boolToStr(opt.skip_reference_output)},
-        {"output-insertion", toString(opt.output_insertion, valW)},
-        {"wfa", boolToStr(opt.wfa)},
+        {"no-reference-output", boolToStr(opt.no_reference_output)},
+        {"insertions-output", toString(opt.insertions_output, valW)},
+        {"enable-wfa", boolToStr(opt.enable_wfa)},
         {"seq2seq", boolToStr(opt.seq2seq)},
         {"keep-length", boolToStr(opt.keep_length)},
         {"save-workdir", boolToStr(opt.save_workdir)}
@@ -589,9 +590,9 @@ public:
 	std::string make_usage(const CLI::App* app, std::string name) const override {
 		std::ostringstream out;
 		out << "Usage:\n"
-			<< "  ./halign4 -i <ref.fa> -o <output.fa> -w </path/to/workdir> [options]\n\n"
+			<< "  ./halign4 -i <input.fa> -o <output.fa> -w </path/to/workdir> [options]\n\n"
 			<< "Example:\n"
-			<< "  ./halign4 -i ref.fa -o output.fa -w ./tmp -t 8\n\n";
+			<< "  ./halign4 -i input.fa -o output.fa -w ./tmp -t 8\n\n";
 		return out.str();
 	}
 };

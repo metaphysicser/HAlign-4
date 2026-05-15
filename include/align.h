@@ -183,19 +183,19 @@ namespace align {
         public:
         // 直接参数构造：读取参考、构建索引、准备共识序列
         RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path,
-                   int kmer_size = 19, int window_size = 19,
-                   int sketch_size = 30000, int profile_ref_kmer_len = 10,
+                   int minimizer_size = 19, int minimizer_window = 19,
+                   int sketch_size = 30000, int sketch_kmer_size = 10,
                    bool noncanonical = true,
-                   int threads = 1, std::string msa_cmd = "",
+                   int threads = 1, std::string msa_tool = "",
                    bool enable_wfa = false,
-                   const FilePath& ref_aligned_path = FilePath(),
+                   const FilePath& reference_msa_path = FilePath(),
                    std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX,
                    int gap_open = 10,
                    int gap_extend = 2,
-                   int profile_ref_min = 15,
-                   int profile_ref_max = 40,
-                   double profile_ref_min_similarity = 0.7,
-                   bool detect_reverse_complement = false);
+                   int min_profile_references = 15,
+                   int max_profile_references = 40,
+                   double min_profile_reference_similarity = 0.7,
+                   bool auto_strand = false);
 
         // Options 构造（推荐）
         RefAligner(const Options& opt, const FilePath& ref_fasta_path);
@@ -232,7 +232,7 @@ namespace align {
 
 
         private:
-        void loadReference(const FilePath& ref_fasta_path, const FilePath& ref_aligned_path);
+        void loadReference(const FilePath& ref_fasta_path, const FilePath& reference_msa_path);
         void rebuildNormalizedReferenceProfiles();
         void refreshNormalizedReferenceProfiles(const std::vector<std::string>& ref_ids);
 
@@ -297,26 +297,26 @@ namespace align {
         ProfileMatrix consensus_profile;
 
         // MinHash / minimizer 参数
-        int kmer_size = 21;
-        int window_size = 10;
+        int minimizer_size = 21;
+        int minimizer_window = 10;
         int sketch_size = 2000;
-        // 仅用于 profile reference sketch 构建的 k-mer 大小，与 minimizer 的 kmer_size 解耦。
-        int profile_ref_kmer_len = 10;
+        // 仅用于 profile reference sketch 构建的 k-mer 大小，与 minimizer 的 minimizer_size 解耦。
+        int sketch_kmer_size = 10;
         int random_seed = 42;
 
         // 并行与外部工具配置
         int threads = 1;            // OpenMP 线程数（<=0 时由运行时决定）
-        std::string msa_cmd;        // 外部 MSA 命令模板
+        std::string msa_tool;        // 外部 MSA 命令模板
 
         bool enable_wfa = false;  // true：允许使用 WFA 路径
         bool profile_alignment_mode = false; // true：本轮 SAM 以 profile/带 gap 共识坐标为参考
         std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX;
         int gap_open = 10;
         int gap_extend = 2;
-        int profile_ref_min = 15;
-        int profile_ref_max = 40;
-        double profile_ref_min_similarity = 0.7;
-        bool detect_reverse_complement = false;
+        int min_profile_references = 15;
+        int max_profile_references = 40;
+        double min_profile_reference_similarity = 0.7;
+        bool auto_strand = false;
 
         // 是否考虑反向互补
         bool noncanonical = true;

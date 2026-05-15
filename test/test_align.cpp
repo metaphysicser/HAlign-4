@@ -530,7 +530,7 @@ TEST_SUITE("align") {
         }
     }
 
-    TEST_CASE("CLI setup - parse --ref-align") {
+    TEST_CASE("CLI setup - parse --reference-msa") {
         namespace fs = std::filesystem;
 
         const fs::path dir = fs::current_path() / "halign4_tests_cli_ref_align";
@@ -553,7 +553,7 @@ TEST_SUITE("align") {
             "-i", input.string(),
             "-o", output.string(),
             "-r", ref.string(),
-            "--ref-align", ref_align.string()
+            "--reference-msa", ref_align.string()
         };
         std::vector<char*> argv;
         argv.reserve(args.size());
@@ -562,8 +562,8 @@ TEST_SUITE("align") {
         }
 
         REQUIRE_NOTHROW(app.parse(static_cast<int>(argv.size()), argv.data()));
-        CHECK(opt.ref_path == ref.string());
-        CHECK(opt.ref_align_path == ref_align.string());
+        CHECK(opt.reference_path == ref.string());
+        CHECK(opt.reference_msa_path == ref_align.string());
 
         fs::remove_all(dir, ec);
     }
@@ -588,10 +588,10 @@ TEST_SUITE("align") {
             "halign4",
             "-i", input.string(),
             "-o", output.string(),
-            "--profile-ref-kmer-len", "10",
-            "--profile-ref-min", "15",
-            "--profile-ref-max", "40",
-            "--profile-ref-min-similarity", "0.7"
+            "--sketch-kmer-size", "10",
+            "--min-profile-references", "15",
+            "--max-profile-references", "40",
+            "--min-profile-reference-similarity", "0.7"
         };
         std::vector<char*> argv;
         argv.reserve(args.size());
@@ -600,10 +600,10 @@ TEST_SUITE("align") {
         }
 
         REQUIRE_NOTHROW(app.parse(static_cast<int>(argv.size()), argv.data()));
-        CHECK(opt.profile_ref_kmer_len == 10);
-        CHECK(opt.profile_ref_min == 15);
-        CHECK(opt.profile_ref_max == 40);
-        CHECK(opt.profile_ref_min_similarity == doctest::Approx(0.7));
+        CHECK(opt.sketch_kmer_size == 10);
+        CHECK(opt.min_profile_references == 15);
+        CHECK(opt.max_profile_references == 40);
+        CHECK(opt.min_profile_reference_similarity == doctest::Approx(0.7));
 
         fs::remove_all(dir, ec);
     }
@@ -629,8 +629,8 @@ TEST_SUITE("align") {
             "halign4",
             "-i", input.string(),
             "-o", output.string(),
-            "--skip-reference-output",
-            "--output-insertion", insertion_tsv.string(),
+            "--no-reference-output",
+            "--insertions-output", insertion_tsv.string(),
             "--insertion-merge", "msa"
         };
         std::vector<char*> argv;
@@ -640,8 +640,8 @@ TEST_SUITE("align") {
         }
 
         REQUIRE_NOTHROW(app.parse(static_cast<int>(argv.size()), argv.data()));
-        CHECK(opt.skip_reference_output);
-        CHECK(opt.output_insertion == insertion_tsv.string());
+        CHECK(opt.no_reference_output);
+        CHECK(opt.insertions_output == insertion_tsv.string());
         CHECK(opt.insertion_merge == "msa");
 
         fs::remove_all(dir, ec);

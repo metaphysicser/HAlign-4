@@ -18,39 +18,39 @@
 namespace align {
     // 读取参考序列，计算索引，生成共识序列
     RefAligner::RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path,
-                           int kmer_size, int window_size,
-                           int sketch_size, int profile_ref_kmer_len, bool noncanonical,
-                           int threads, std::string msa_cmd,
+                           int minimizer_size, int minimizer_window,
+                           int sketch_size, int sketch_kmer_size, bool noncanonical,
+                           int threads, std::string msa_tool,
                            bool enable_wfa,
-                           const FilePath& ref_aligned_path,
+                           const FilePath& reference_msa_path,
                            std::array<int8_t, 25> score_matrix_in,
                            int gap_open,
                            int gap_extend,
-                           int profile_ref_min,
-                           int profile_ref_max,
-                           double profile_ref_min_similarity,
-                           bool detect_reverse_complement)
+                           int min_profile_references,
+                           int max_profile_references,
+                           double min_profile_reference_similarity,
+                           bool auto_strand)
         : work_dir(work_dir),
-          kmer_size(kmer_size),
-          window_size(window_size),
+          minimizer_size(minimizer_size),
+          minimizer_window(minimizer_window),
           sketch_size(sketch_size),
-          profile_ref_kmer_len(profile_ref_kmer_len),
+          sketch_kmer_size(sketch_kmer_size),
           noncanonical(noncanonical),
           threads(threads),
-          msa_cmd(std::move(msa_cmd)),
+          msa_tool(std::move(msa_tool)),
           enable_wfa(enable_wfa),
           score_matrix(score_matrix_in),
           gap_open(gap_open),
           gap_extend(gap_extend),
-          profile_ref_min(profile_ref_min),
-          profile_ref_max(profile_ref_max),
-          profile_ref_min_similarity(profile_ref_min_similarity),
-          detect_reverse_complement(detect_reverse_complement)
+          min_profile_references(min_profile_references),
+          max_profile_references(max_profile_references),
+          min_profile_reference_similarity(min_profile_reference_similarity),
+          auto_strand(auto_strand)
     {
-        loadReference(ref_fasta_path, ref_aligned_path);
+        loadReference(ref_fasta_path, reference_msa_path);
     }
 
-    void RefAligner::loadReference(const FilePath& ref_fasta_path, const FilePath& ref_aligned_path)
+    void RefAligner::loadReference(const FilePath& ref_fasta_path, const FilePath& reference_msa_path)
     {
         // 加载参考序列，sketch 在读取完成后并行构建，避免串行 I/O 循环承担重计算。
         seq_io::KseqReader reader(ref_fasta_path);
@@ -65,11 +65,11 @@ namespace align {
         std::vector<mash::Sketch> ref_sketches(ref_records.size());
 
 #pragma omp parallel for default(none) schedule(dynamic) num_threads(build_threads) \
-    shared(ref_records, ref_sketches) firstprivate(profile_ref_kmer_len, sketch_size, noncanonical, random_seed)
+    shared(ref_records, ref_sketches) firstprivate(sketch_kmer_size, sketch_size, noncanonical, random_seed)
         for (std::int64_t i = 0; i < static_cast<std::int64_t>(ref_records.size()); ++i) {
             ref_sketches[static_cast<std::size_t>(i)] = mash::sketchFromSequence(
                 ref_records[static_cast<std::size_t>(i)].seq,
-                static_cast<std::size_t>(profile_ref_kmer_len),
+                static_cast<std::size_t>(sketch_kmer_size),
                 static_cast<std::size_t>(sketch_size),
                 noncanonical,
                 random_seed);
@@ -98,22 +98,22 @@ namespace align {
         spdlog::info("Loaded {} reference sequences", ref_sequences.size());
 
         // 设置共识序列生成的文件路径
-        const bool has_prealigned_ref = !ref_aligned_path.empty();
-        const FilePath consensus_unaligned_file = has_prealigned_ref ? ref_aligned_path : ref_fasta_path;
+        const bool has_prealigned_ref = !reference_msa_path.empty();
+        const FilePath consensus_unaligned_file = has_prealigned_ref ? reference_msa_path : ref_fasta_path;
         const FilePath consensus_aligned_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_ALIGNED;
         const FilePath consensus_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_FASTA;
         const FilePath consensus_json_file = FilePath(work_dir) / WORKDIR_DATA / DATA_CLEAN / CLEAN_CONS_JSON;
 
         // 执行 MSA 并生成共识序列
         // 说明：
-        // - 默认路径：对 -r/--ref 提供的原始 FASTA 重新做一次 MSA，再从对齐结果生成共识；
-        // - 若用户同时提供 --ref-align，则说明这个参考集合已经有现成的 MSA，
+        // - 默认路径：对 -r/--reference 提供的原始 FASTA 重新做一次 MSA，再从对齐结果生成共识；
+        // - 若用户同时提供 --reference-msa，则说明这个参考集合已经有现成的 MSA，
         //   这里直接复用该 MSA，避免重复对齐，从而节省时间并保持参考坐标不变。
         constexpr std::size_t consensus_batch_size = 4096;
         if (has_prealigned_ref) {
             file_io::copyFile(consensus_unaligned_file, consensus_aligned_file);
         } else {
-            alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, this->msa_cmd, threads);
+            alignConsensusSequence(consensus_unaligned_file, consensus_aligned_file, this->msa_tool, threads);
         }
 
         seq_io::KseqReader reader2(consensus_aligned_file);
@@ -150,15 +150,15 @@ namespace align {
         // 预计算共识序列的 sketch 和 minimizer，避免重复计算。
         consensus_sketch = mash::sketchFromSequence(
             consensus_seq.seq,
-            static_cast<std::size_t>(profile_ref_kmer_len),
+            static_cast<std::size_t>(sketch_kmer_size),
             static_cast<std::size_t>(sketch_size),
             noncanonical,
             random_seed);
 
         consensus_minimizer = minimizer::extractMinimizer(
-            consensus_seq.seq, kmer_size, window_size, noncanonical);
+            consensus_seq.seq, minimizer_size, minimizer_window, noncanonical);
         consensus_gap_minimizer = minimizer::extractMinimizer(
-            consensus_gap_seq.seq, kmer_size, window_size, noncanonical);
+            consensus_gap_seq.seq, minimizer_size, minimizer_window, noncanonical);
     }
 
     // Options 配置委托构造
@@ -166,22 +166,22 @@ namespace align {
         : RefAligner(
             opt.workdir,
             ref_fasta_path,
-            opt.kmer_size,
-            opt.kmer_window,
+            opt.minimizer_size,
+            opt.minimizer_window,
             opt.sketch_size,
-            opt.profile_ref_kmer_len,
+            opt.sketch_kmer_size,
             true,
             opt.threads,
-            opt.msa_cmd,
-            opt.wfa,
-            FilePath(opt.ref_align_path),
+            opt.msa_tool,
+            opt.enable_wfa,
+            FilePath(opt.reference_msa_path),
             opt.score_matrix,
             opt.gap_open,
             opt.gap_extend,
-            opt.profile_ref_min,
-            opt.profile_ref_max,
-            opt.profile_ref_min_similarity,
-            opt.detect_reverse_complement)
+            opt.min_profile_references,
+            opt.max_profile_references,
+            opt.min_profile_reference_similarity,
+            opt.auto_strand)
     {
     }
 
@@ -369,16 +369,18 @@ namespace align {
 
         // 若 minimizer 为空，现场计算
         if (ref_mz_ptr == nullptr || ref_mz_ptr->empty()) {
-            ref_mz_tmp = minimizer::extractMinimizer(ref, kmer_size, window_size, noncanonical);
+            ref_mz_tmp = minimizer::extractMinimizer(ref, minimizer_size, minimizer_window, noncanonical);
             ref_mz_ptr = &ref_mz_tmp;
         }
         if (qry_mz_ptr == nullptr || qry_mz_ptr->empty()) {
-            qry_mz_tmp = minimizer::extractMinimizer(query, kmer_size, window_size, noncanonical);
+            qry_mz_tmp = minimizer::extractMinimizer(query, minimizer_size, minimizer_window, noncanonical);
             qry_mz_ptr = &qry_mz_tmp;
         }
 
         const anchor::Anchors anchors = minimizer::collect_anchors(*ref_mz_ptr, *qry_mz_ptr);
-        cigar::Cigar_t result = globalAlignSeq2Seq(ref, query, anchors, makeAlignConfig());
+        cigar::Cigar_t result = enable_wfa
+            ? globalAlignWFA2(ref, query)
+            : globalAlignSeq2Seq(ref, query, anchors, makeAlignConfig());
 
 #ifdef _DEBUG
         const std::size_t cigar_ref_len = cigar::getRefLength(result);
@@ -407,11 +409,11 @@ namespace align {
 
         // 若 minimizer 为空，现场计算
         if (ref_mz_ptr == nullptr || ref_mz_ptr->empty()) {
-            ref_mz_tmp = minimizer::extractMinimizer(ref_string, kmer_size, window_size, noncanonical);
+            ref_mz_tmp = minimizer::extractMinimizer(ref_string, minimizer_size, minimizer_window, noncanonical);
             ref_mz_ptr = &ref_mz_tmp;
         }
         if (qry_mz_ptr == nullptr || qry_mz_ptr->empty()) {
-            qry_mz_tmp = minimizer::extractMinimizer(query, kmer_size, window_size, noncanonical);
+            qry_mz_tmp = minimizer::extractMinimizer(query, minimizer_size, minimizer_window, noncanonical);
             qry_mz_ptr = &qry_mz_tmp;
         }
 
@@ -467,16 +469,16 @@ namespace align {
             return value;
         };
 
-        const std::size_t min_count = static_cast<std::size_t>(std::max(1, profile_ref_min));
+        const std::size_t min_count = static_cast<std::size_t>(std::max(1, min_profile_references));
         const std::size_t max_count = std::max(
             min_count,
-            static_cast<std::size_t>(std::max(profile_ref_min, profile_ref_max)));
-        const double min_sequence_similarity = clamp01(profile_ref_min_similarity);
-        const std::size_t mash_kmer_len = static_cast<std::size_t>(std::max(1, profile_ref_kmer_len));
+            static_cast<std::size_t>(std::max(min_profile_references, max_profile_references)));
+        const double min_sequence_similarity = clamp01(min_profile_reference_similarity);
+        const std::size_t mash_kmer_len = static_cast<std::size_t>(std::max(1, sketch_kmer_size));
 
-        for (mash::SketchMatch& match : matches) {
-            match.similarity = mash::aniFromJaccard(clamp01(match.similarity), mash_kmer_len);
-        }
+        // for (mash::SketchMatch& match : matches) {
+        //     match.similarity = mash::aniFromJaccard(clamp01(match.similarity), mash_kmer_len);
+        // }
 
         std::sort(matches.begin(), matches.end(),
                   [](const mash::SketchMatch& a, const mash::SketchMatch& b) {
@@ -511,17 +513,17 @@ namespace align {
     {
         const seq_io::SeqRecord* query_record = &q;
         seq_io::SeqRecord rc_query_storage;
-        if (detect_reverse_complement) {
+        if (auto_strand) {
             const mash::Sketch fwd_sketch = mash::sketchFromSequence(
                 q.seq,
-                static_cast<std::size_t>(profile_ref_kmer_len),
+                static_cast<std::size_t>(sketch_kmer_size),
                 static_cast<std::size_t>(sketch_size),
                 noncanonical,
                 random_seed);
             rc_query_storage = reverseComplementRecord(q);
             const mash::Sketch rc_sketch = mash::sketchFromSequence(
                 rc_query_storage.seq,
-                static_cast<std::size_t>(profile_ref_kmer_len),
+                static_cast<std::size_t>(sketch_kmer_size),
                 static_cast<std::size_t>(sketch_size),
                 noncanonical,
                 random_seed);
@@ -532,7 +534,7 @@ namespace align {
         }
 
         const SeedHits query_minimizer = minimizer::extractMinimizer(
-            query_record->seq, kmer_size, window_size, noncanonical);
+            query_record->seq, minimizer_size, minimizer_window, noncanonical);
 
         const double consensus_similarity = 1;
         cigar::Cigar_t consensus_cigar = Seq2SeqWithAnchor(
@@ -562,7 +564,7 @@ namespace align {
         auto sketch_query = [this](const std::string& seq) {
             return mash::sketchFromSequence(
                 seq,
-                static_cast<std::size_t>(profile_ref_kmer_len),
+                static_cast<std::size_t>(sketch_kmer_size),
                 static_cast<std::size_t>(sketch_size),
                 noncanonical,
                 random_seed);
@@ -576,7 +578,7 @@ namespace align {
             selected_matches = selectProfileMatches(qsk);
             best_sequence_similarity = selected_matches.empty() ? 0.0 : selected_matches.front().similarity;
 
-            if (detect_reverse_complement) {
+            if (auto_strand) {
                 seq_io::SeqRecord rc_query = reverseComplementRecord(q);
                 mash::Sketch rc_sketch = sketch_query(rc_query.seq);
                 std::vector<mash::SketchMatch> rc_matches = selectProfileMatches(rc_sketch);
@@ -591,13 +593,13 @@ namespace align {
         } else {
             best_sequence_similarity = mash::aniFromJaccard(
                 mash::jaccard(qsk, consensus_sketch),
-                static_cast<std::size_t>(std::max(1, profile_ref_kmer_len)));
-            if (detect_reverse_complement) {
+                static_cast<std::size_t>(std::max(1, sketch_kmer_size)));
+            if (auto_strand) {
                 seq_io::SeqRecord rc_query = reverseComplementRecord(q);
                 mash::Sketch rc_sketch = sketch_query(rc_query.seq);
                 const double rc_sequence_similarity = mash::aniFromJaccard(
                     mash::jaccard(rc_sketch, consensus_sketch),
-                    static_cast<std::size_t>(std::max(1, profile_ref_kmer_len)));
+                    static_cast<std::size_t>(std::max(1, sketch_kmer_size)));
                 if (rc_sequence_similarity > best_sequence_similarity) {
                     out_profile_query = std::move(rc_query);
                     qsk = std::move(rc_sketch);
@@ -607,7 +609,7 @@ namespace align {
         }
 
         const SeedHits query_minimizer = minimizer::extractMinimizer(
-            out_profile_query.seq, kmer_size, window_size, noncanonical);
+            out_profile_query.seq, minimizer_size, minimizer_window, noncanonical);
 
         const ProfileMatrix* alignment_profile = &consensus_profile;
         std::string alignment_ref_string = consensus_gap_seq.seq;
@@ -637,7 +639,7 @@ namespace align {
             alignment_profile = &combined_profile;
             alignment_ref_string = profileToGappedSequence(combined_profile);
             alignment_ref_minimizer_storage = minimizer::extractMinimizer(
-                alignment_ref_string, kmer_size, window_size, noncanonical);
+                alignment_ref_string, minimizer_size, minimizer_window, noncanonical);
             alignment_ref_minimizer = &alignment_ref_minimizer_storage;
         }
 

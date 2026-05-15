@@ -54,13 +54,15 @@ The most important parameters are:
 - `-i/--input`: input FASTA (required)
 - `-o/--output`: output aligned FASTA (required)
 - `-w/--workdir`: working directory (optional; default: `./tmp-<random>`)
-- `-p/--msa-cmd`: MSA method (keyword: `minipoa`/`mafft`/`clustalo`, or a custom template)
-- `-r/--ref`: provide a reference/center FASTA (optional)
-- `--align-ref`: provide the pre-aligned MSA for the `-r/--ref` reference set
-- `-s/--score`: provide a DNA5 scoring matrix file (see `score.example.tsv`)
+- `--msa-tool`: MSA method (keyword: `minipoa`/`mafft`/`clustalo`, or a custom template)
+- `-r/--reference`: provide a reference/center FASTA (optional)
+- `--reference-msa`: provide the pre-aligned MSA for the `-r/--reference` reference set
+- `--score-matrix`: provide a DNA5 scoring matrix file (see `score.example.tsv`)
+- `--minimizer-size`, `--minimizer-window`, `--consensus-num`, `--sketch-size`, `--sketch-kmer-size`, `--batch-size`: algorithm sizing controls
 - `--gap-open`, `--gap-extend`: control gap open/extension penalties
-- `--profile-ref-min`, `--profile-ref-max`, `--profile-ref-min-similarity`: mash-based reference profile selection controls
-- `--keep-length`: keep reference length coordinate rules
+- `--min-profile-references`, `--max-profile-references`, `--min-profile-reference-similarity`: mash-based reference profile selection controls
+- `-k/--keep-length`: keep reference length coordinate rules
+- `--auto-strand`, `--insertion-merge`, `--insertions-output`, `--no-reference-output`, `--save-workdir`, `--enable-wfa`: optional workflow/output controls
 
 For the full parameter list and detailed examples, see [`docs/usage.md`](docs/usage.md).
 

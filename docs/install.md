@@ -141,7 +141,7 @@ minipoa -h
 
 ## 3. Common issues
 
-### 3.1 `msa_cmd template test failed` at startup
+### 3.1 `msa-tool template test failed` at startup
 
 During argument validation, `halign4` runs a tiny self-check command via the system shell.
 
@@ -163,7 +163,7 @@ clustalo --version
 minipoa -h
 ```
 
-3. If you use `-p/--msa-cmd` with a custom template string, ensure it contains `{input}` and `{output}`.
+3. If you use `--msa-tool` with a custom template string, ensure it contains `{input}` and `{output}`.
 
 ---
 

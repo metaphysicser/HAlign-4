@@ -15,11 +15,11 @@
 // 解释：此处使用的 FilePath 为 file_io::FilePath（即 std::filesystem::path 的别名），
 // seq_io 命名空间封装了读取/写入 FASTA 的细节（openKseqReader / SeqWriter / SeqRecord 等）。
 
-uint_t preprocessInputFasta(const std::string input_path, const std::string workdir, const int cons_n) {
+uint_t preprocessInputFasta(const std::string input_path, const std::string workdir, const int consensus_num) {
     // 参数说明：
     // - input_path: 输入 FASTA 的路径或 URL（字符串）。
     // - workdir: 工作目录路径（应当已经准备好或由调用方保证），在此目录下会创建 data/raw 和 data/clean 等子目录。
-    // - cons_n: 要保留的最长序列数量（Top-K）。
+    // - consensus_num: 要保留的最长序列数量（Top-K）。
 
     // 计时用于日志记录，帮助性能分析
     const auto t_start = std::chrono::steady_clock::now();
@@ -85,7 +85,7 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
 
     // ---------- 准备输出文件名 ----------
     // 5) 打开 raw 文件并逐条读取；对每条序列进行清洗（cleanSequence），写入 clean_data
-    //    同时维护 TopKLongestSelector，选择最长的 cons_n 条序列（用于之后的 consensus 生成）。
+    //    同时维护 TopKLongestSelector，选择最长的 consensus_num 条序列（用于之后的 consensus 生成）。
     // handle input filenames like `sample.fasta.gz` -> `sample.fasta`
     FilePath in_fname = input_file.filename();
     std::string in_name = in_fname.string();
@@ -108,7 +108,7 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
     // 2. 本地文件：用户提供的原始路径（无需复制，性能优化）
     auto reader = seq_io::openKseqReader(actual_input_file);
     seq_io::SeqWriter clean_writer(clean_dest_file);
-    TopKLongestSelector selector(cons_n);
+    TopKLongestSelector selector(consensus_num);
 
     // 处理循环：读取 -> 清洗 -> 写出 -> 交给 TopK 选择器
     seq_io::SeqRecord rec;
@@ -160,7 +160,7 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
     const double elapsed_s = std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
 
     spdlog::info("Preprocessing completed. Total records processed: {}. Selected top {} sequences: {}. Elapsed: {:.2f} s",
-                 total_records, cons_n, cons_seqs.size(), elapsed_s);
+                 total_records, consensus_num, cons_seqs.size(), elapsed_s);
     // 将 size_t 转为项目级别的 uint_t（在 config.hpp 中定义）；防止溢出则截断到 U_MAX
     if (total_records > static_cast<std::size_t>(U_MAX)) {
         spdlog::warn("Processed records ({}) exceed U_MAX ({}); truncating to U_MAX", total_records, U_MAX);
@@ -172,7 +172,7 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
 
 
 void alignConsensusSequence(const FilePath& input_file, const FilePath& output_file,
-                            const std::string& msa_cmd, int threads)
+                            const std::string& msa_tool, int threads)
 {
 
     // 检查输入文件是否存在
@@ -187,7 +187,7 @@ void alignConsensusSequence(const FilePath& input_file, const FilePath& output_f
     spdlog::info("Starting consensus alignment");
     spdlog::info("  input : {}", input_file.string());
     spdlog::info("  output: {}", output_file.string());
-    spdlog::info("  tool  : {}", msa_cmd);
+    spdlog::info("  tool  : {}", msa_tool);
     spdlog::info("  thrs  : {}", threads);
 
     // 尝试记录输入文件大小（若可访问）
@@ -202,7 +202,7 @@ void alignConsensusSequence(const FilePath& input_file, const FilePath& output_f
 
     // 组装命令。默认把 -i / -o / -t 作为参数传入，便于未来统一替换为 cmd 模块的调用。
     cmd::BuildOptions build_opt;
-    const std::string cmd_str = cmd::buildCommand(msa_cmd,input_file.string(),output_file.string(),threads, build_opt);
+    const std::string cmd_str = cmd::buildCommand(msa_tool,input_file.string(),output_file.string(),threads, build_opt);
     spdlog::info("Built MSA command (length {}): {}", cmd_str.size(), cmd_str);
     spdlog::info("MSA command (escaped): {}", cmd_str);
 
@@ -251,15 +251,15 @@ void alignConsensusSequence(const FilePath& input_file, const FilePath& output_f
 //
 // 实现步骤：
 // 1) 读取 ref_fasta，按 ID 建立 unordered_map（key=ID, value=去gap后的序列）
-// 2) 逐条读取 ref_aligned，从 map 中查找匹配的序列并比较
+// 2) 逐条读取 reference_msa，从 map 中查找匹配的序列并比较
 // 3) 最后检查 ref_fasta 的序列是否全部被消耗
 //
 // ==============================================================
-void validateRefAlignedConsistency(const FilePath& ref_fasta, const FilePath& ref_aligned)
+void validateRefAlignedConsistency(const FilePath& ref_fasta, const FilePath& reference_msa)
 {
     spdlog::info("Validating reference and aligned reference consistency");
-    spdlog::info("  -r/--ref: {}", ref_fasta.string());
-    spdlog::info("  --ref-align: {}", ref_aligned.string());
+    spdlog::info("  -r/--reference: {}", ref_fasta.string());
+    spdlog::info("  --reference-msa: {}", reference_msa.string());
 
     auto toUpperBase = [](char c) -> char {
         return static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
@@ -276,7 +276,7 @@ void validateRefAlignedConsistency(const FilePath& ref_fasta, const FilePath& re
         while (reader.next(rec)) {
             if (ref_seqs.find(rec.id) != ref_seqs.end()) {
                 std::ostringstream oss;
-                oss << "Duplicate sequence ID in -r/--ref: '" << rec.id << "'";
+                oss << "Duplicate sequence ID in -r/--reference: '" << rec.id << "'";
                 spdlog::error(oss.str());
                 throw std::runtime_error(oss.str());
             }
@@ -289,7 +289,7 @@ void validateRefAlignedConsistency(const FilePath& ref_fasta, const FilePath& re
 
                 if (c == '-') {
                     std::ostringstream oss;
-                    oss << "Gap character found in -r/--ref for ID '" << rec.id
+                    oss << "Gap character found in -r/--reference for ID '" << rec.id
                         << "' at position " << (i + 1)
                         << ". Reference FASTA must not contain gaps.";
                     spdlog::error(oss.str());
@@ -303,18 +303,18 @@ void validateRefAlignedConsistency(const FilePath& ref_fasta, const FilePath& re
         }
     }
 
-    spdlog::info("Loaded {} sequences from -r/--ref", ref_seqs.size());
+    spdlog::info("Loaded {} sequences from -r/--reference", ref_seqs.size());
 
-    // 第二步：读取 ref_aligned
+    // 第二步：读取 reference_msa
     // 要求：
     // 1) ID 必须存在于 ref_fasta
-    // 2) ref_aligned 所有序列的对齐长度必须一致
+    // 2) reference_msa 所有序列的对齐长度必须一致
     // 3) 删除 gap 后，与 ref_fasta 对应序列一致，忽略大小写
     std::unordered_set<std::string> matched;
     std::optional<std::size_t> expected_aligned_len;
 
     {
-        seq_io::KseqReader reader(ref_aligned);
+        seq_io::KseqReader reader(reference_msa);
         seq_io::SeqRecord rec;
         std::size_t seq_idx = 0;
 
@@ -323,7 +323,7 @@ void validateRefAlignedConsistency(const FilePath& ref_fasta, const FilePath& re
 
             if (matched.find(rec.id) != matched.end()) {
                 std::ostringstream oss;
-                oss << "Duplicate sequence ID in --ref-align: '" << rec.id << "'";
+                oss << "Duplicate sequence ID in --reference-msa: '" << rec.id << "'";
                 spdlog::error(oss.str());
                 throw std::runtime_error(oss.str());
             }
@@ -333,10 +333,10 @@ void validateRefAlignedConsistency(const FilePath& ref_fasta, const FilePath& re
                 expected_aligned_len = rec.seq.size();
             } else if (rec.seq.size() != expected_aligned_len.value()) {
                 std::ostringstream oss;
-                oss << "Aligned sequence length mismatch in --ref-align for ID '" << rec.id
+                oss << "Aligned sequence length mismatch in --reference-msa for ID '" << rec.id
                     << "': expected aligned length " << expected_aligned_len.value()
                     << ", but got " << rec.seq.size()
-                    << ". All sequences in --ref-align must have the same aligned length.";
+                    << ". All sequences in --reference-msa must have the same aligned length.";
                 spdlog::error(oss.str());
                 throw std::runtime_error(oss.str());
             }
@@ -344,7 +344,7 @@ void validateRefAlignedConsistency(const FilePath& ref_fasta, const FilePath& re
             auto it = ref_seqs.find(rec.id);
             if (it == ref_seqs.end()) {
                 std::ostringstream oss;
-                oss << "Sequence ID in --ref-align not found in -r/--ref: '" << rec.id << "'";
+                oss << "Sequence ID in --reference-msa not found in -r/--reference: '" << rec.id << "'";
                 spdlog::error(oss.str());
                 throw std::runtime_error(oss.str());
             }
@@ -374,16 +374,16 @@ void validateRefAlignedConsistency(const FilePath& ref_fasta, const FilePath& re
                 std::ostringstream oss;
                 oss << "Sequence length mismatch after removing gaps for ID '" << rec.id << "': "
                     << "-r has " << ref_seq.size() << " bases, "
-                    << "--ref-align has " << align_ungapped.size() << " bases.";
+                    << "--reference-msa has " << align_ungapped.size() << " bases.";
 
                 const std::size_t min_len = std::min(ref_seq.size(), align_ungapped.size());
                 if (min_len < ref_seq.size()) {
                     oss << " First extra base in -r is at ungapped position " << (min_len + 1)
-                        << ": -r='" << ref_seq[min_len] << "', --ref-align=<end>.";
+                        << ": -r='" << ref_seq[min_len] << "', --reference-msa=<end>.";
                 } else if (min_len < align_ungapped.size()) {
-                    oss << " First extra base in --ref-align is at ungapped position " << (min_len + 1)
+                    oss << " First extra base in --reference-msa is at ungapped position " << (min_len + 1)
                         << ", aligned position " << aligned_pos_of_ungapped_base[min_len]
-                        << ": -r=<end>, --ref-align='" << align_ungapped[min_len] << "'.";
+                        << ": -r=<end>, --reference-msa='" << align_ungapped[min_len] << "'.";
                 }
 
                 spdlog::error(oss.str());
@@ -398,7 +398,7 @@ void validateRefAlignedConsistency(const FilePath& ref_fasta, const FilePath& re
                         << "at ungapped position " << (i + 1)
                         << ", aligned position " << aligned_pos_of_ungapped_base[i]
                         << ": -r='" << ref_seq[i]
-                        << "', --ref-align='" << align_ungapped[i] << "'.";
+                        << "', --reference-msa='" << align_ungapped[i] << "'.";
 
                     spdlog::error(oss.str());
                     throw std::runtime_error(oss.str());
@@ -408,15 +408,15 @@ void validateRefAlignedConsistency(const FilePath& ref_fasta, const FilePath& re
             matched.insert(rec.id);
         }
 
-        spdlog::info("Validated {} sequences from --ref-align", seq_idx);
+        spdlog::info("Validated {} sequences from --reference-msa", seq_idx);
     }
 
-    // 第三步：检查 ref_fasta 中所有序列是否都在 ref_aligned 中出现
+    // 第三步：检查 ref_fasta 中所有序列是否都在 reference_msa 中出现
     if (matched.size() != ref_seqs.size()) {
         for (const auto& kv : ref_seqs) {
             if (matched.find(kv.first) == matched.end()) {
                 std::ostringstream oss;
-                oss << "Sequence ID in -r/--ref not found in --ref-align: '" << kv.first << "'";
+                oss << "Sequence ID in -r/--reference not found in --reference-msa: '" << kv.first << "'";
                 spdlog::error(oss.str());
                 throw std::runtime_error(oss.str());
             }
@@ -424,14 +424,14 @@ void validateRefAlignedConsistency(const FilePath& ref_fasta, const FilePath& re
 
         std::ostringstream oss;
         oss << "Sequence count mismatch: -r has " << ref_seqs.size()
-            << " sequences, but --ref-align has " << matched.size()
+            << " sequences, but --reference-msa has " << matched.size()
             << " matching sequences.";
         spdlog::error(oss.str());
         throw std::runtime_error(oss.str());
     }
 
     spdlog::info(
-        "Successfully validated --ref-align consistency: all {} sequences matched",
+        "Successfully validated --reference-msa consistency: all {} sequences matched",
         ref_seqs.size()
     );
 }
