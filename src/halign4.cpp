@@ -48,6 +48,7 @@ static void checkOption(Options& opt) {
     if (opt.profile_ref_min_similarity < 0.0 || opt.profile_ref_min_similarity > 1.0) {
         throw std::runtime_error("profile_ref_min_similarity must be in [0, 1]");
     }
+    (void)parseInsertionMergeMode(opt.insertion_merge);
     if (opt.kmer_size > 31) throw std::runtime_error("kmer_size too large (must be <= 31)");
     if (opt.profile_ref_kmer_len > 31) throw std::runtime_error("profile_ref_kmer_len too large (must be <= 31)");
     if (opt.kmer_window >= 256) {

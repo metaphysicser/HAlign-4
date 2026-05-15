@@ -34,6 +34,7 @@
 #include <random>
 #include <chrono>
 #include <iomanip>
+#include <stdexcept>
 #include <utility>
 
 // ------------------------------------------------------------------
@@ -49,6 +50,22 @@ const std::string MAFFT_MSA_CMD = "mafft --thread {thread} --auto {input} > {out
 const std::string CLUSTALO_MSA_CMD = "clustalo -i {input} -o {output} --threads {thread}"; // Clustal Omega 多序列比对命令模板示例
 
 const std::string DEFAULT_MSA_CMD = MINIPOA_CMD; // 默认多序列比对命令模板
+
+enum class InsertionMergeMode {
+    reference_guided,
+    external_msa,
+};
+
+inline InsertionMergeMode parseInsertionMergeMode(const std::string& mode)
+{
+    if (mode == "reference" || mode == "reference-guided") {
+        return InsertionMergeMode::reference_guided;
+    }
+    if (mode == "msa" || mode == "external-msa") {
+        return InsertionMergeMode::external_msa;
+    }
+    throw std::runtime_error("insertion_merge must be one of: reference, msa");
+}
 
 // 默认 DNA5 打分矩阵（A/C/G/T/N），矩阵文件与内部顺序均使用该顺序。
 static constexpr std::array<int8_t, 25> DEFAULT_DNA5_SCORE_MATRIX = {
@@ -220,6 +237,7 @@ struct Options {
     int profile_ref_max = 40;   // --profile-ref-max：最多使用的参考 profile 数
     double profile_ref_min_similarity = 0.7; // --profile-ref-min-similarity：Mash ANI 序列相似度阈值
     bool detect_reverse_complement = false; // --detect-rc：自动检测并使用反向互补 query
+    std::string insertion_merge = "reference"; // --insertion-merge：reference 或 msa
 
 	// keep length 相关开关：
 	// - keep_length：保持“第一条/中心序列”的长度不变（其余序列允许按对齐结果变化/填充），适用于只关心输出共识/中心序列长度的场景。
@@ -289,7 +307,7 @@ static void setupCli(CLI::App& app, Options& opt) {
     // - 当用户已经为 -r 准备好了比对结果时，可以直接复用该 MSA，避免再次运行 MSA 工具；
     // - 仍然保留 -r 作为“参考/中心序列 FASTA”的入口，保持旧行为不变；
     // - 该参数不是可执行文件，也不是普通的“可选字符串”，因此直接按存在文件路径校验。
-    app.add_option("-a,--align-ref", opt.ref_align_path,
+    app.add_option("-a,--align-ref,--ref-align", opt.ref_align_path,
                    "Pre-aligned MSA file for the reference set provided by -r/--ref.")
         ->check(CLI::ExistingFile);
 
@@ -411,6 +429,12 @@ static void setupCli(CLI::App& app, Options& opt) {
         "Use the reverse-complemented query when it is more similar than the forward query.")
         ->group("Detailed options");
 
+    app.add_option("--insertion-merge", opt.insertion_merge,
+                   "How non-keep-length insertions are merged: reference or msa.")
+        ->default_val("reference")
+        ->check(CLI::IsMember({"reference", "reference-guided", "msa", "external-msa"}))
+        ->group("Detailed options");
+
     // 开关参数：默认关闭，传入 --wfa 时设为 true
     app.add_flag("--wfa", opt.wfa,
         "Enable WFA alignment path (default: disabled).")
@@ -468,6 +492,7 @@ static void logParsedOptions(const Options& opt) {
         {"profile-ref-max", std::to_string(opt.profile_ref_max)},
         {"profile-ref-min-similarity", std::to_string(opt.profile_ref_min_similarity)},
         {"detect-rc", boolToStr(opt.detect_reverse_complement)},
+        {"insertion-merge", opt.insertion_merge},
         {"wfa", boolToStr(opt.wfa)},
         {"seq2seq", boolToStr(opt.seq2seq)},
         {"keep-length", boolToStr(opt.keep_length)},

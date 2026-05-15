@@ -186,7 +186,8 @@ namespace align {
                    int profile_ref_min = 15,
                    int profile_ref_max = 40,
                    double profile_ref_min_similarity = 0.7,
-                   bool detect_reverse_complement = false);
+                   bool detect_reverse_complement = false,
+                   InsertionMergeMode insertion_merge_mode = InsertionMergeMode::reference_guided);
 
         // Options 构造（推荐）
         RefAligner(const Options& opt, const FilePath& ref_fasta_path);
@@ -253,55 +254,6 @@ namespace align {
         void writeSamRecord(const seq_io::SeqRecord& q, const cigar::Cigar_t& cigar,
                            std::string_view ref_name, seq_io::SeqWriter& out) const;
 
-        // 共识 + SAM 合并为 FASTA
-        // keep=false：原样写 query；keep=true：按 CIGAR 投影（当前会去除 query 的 I）
-        std::size_t mergeConsensusAndSamToFasta(
-            const std::vector<FilePath>& sam_paths,
-            const FilePath& fasta_path,
-            std::unordered_map<std::string, cigar::Cigar_t> ref_aligned_map,
-            bool keep = false,
-            std::size_t line_width = 80
-            ) const;
-
-        // 单条 SAM 转 FASTA，并按 CIGAR 调整长度
-        void convertSamToFastaRecord(
-            const seq_io::SamRecord& sam_rec,
-            seq_io::SeqRecord& fasta_rec,
-            const std::unordered_map<std::string, cigar::Cigar_t>& ref_aligned_map,
-            std::size_t estimated_final_length) const;
-
-        // 处理插入序列：SAM -> FASTA -> 可选外部 MSA
-        FilePath processInsertionSequences(
-            const FilePath& result_dir,
-            const FilePath& aligned_insertion_fasta,
-            std::unordered_map<std::string, cigar::Cigar_t>& ref_aligned_map) const;
-
-        // 写入共识与参考序列
-        std::size_t writeConsensusAndReferences(
-            seq_io::SeqWriter& final_writer,
-            const FilePath& consensus_aligned_file,
-            ProgressBar& progress) const;
-
-        // 写入插入序列（跳过首条共识）
-        std::size_t writeInsertionSequences(
-            seq_io::SeqWriter& final_writer,
-            const FilePath& aligned_insertion_fasta,
-            std::size_t& expected_length,
-            bool& length_initialized,
-            ProgressBar& progress) const;
-
-        // 批量读取 SAM，并行转换 FASTA，串行写出
-        void processSamFileBatch(
-            seq_io::SamReader& sam_reader,
-            const std::size_t batch_size,
-            seq_io::SeqWriter& final_writer,
-            const std::unordered_map<std::string, cigar::Cigar_t>& ref_aligned_map,
-            std::size_t estimated_final_length,
-            std::size_t& expected_length,
-            bool& length_initialized,
-            std::size_t& seq_count,
-            ProgressBar& progress) const;
-
         // 解析对齐参考 FASTA：输出每条序列 CIGAR（M/D）与参考 gap 列标记
         // 不做碱基一致性校验，保持现有逻辑。
         void parseAlignedReferencesToCigar(
@@ -352,6 +304,7 @@ namespace align {
         int profile_ref_max = 40;
         double profile_ref_min_similarity = 0.7;
         bool detect_reverse_complement = false;
+        InsertionMergeMode insertion_merge_mode = InsertionMergeMode::reference_guided;
 
         // 是否考虑反向互补
         bool noncanonical = true;

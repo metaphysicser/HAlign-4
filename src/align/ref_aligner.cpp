@@ -30,7 +30,8 @@ namespace align {
                                                      int profile_ref_min,
                                                      int profile_ref_max,
                                                      double profile_ref_min_similarity,
-                                                     bool detect_reverse_complement)
+                                                     bool detect_reverse_complement,
+                                                     InsertionMergeMode insertion_merge_mode)
         : work_dir(work_dir),
           kmer_size(kmer_size),
           window_size(window_size),
@@ -47,7 +48,8 @@ namespace align {
           profile_ref_min(profile_ref_min),
           profile_ref_max(profile_ref_max),
           profile_ref_min_similarity(profile_ref_min_similarity),
-          detect_reverse_complement(detect_reverse_complement)
+          detect_reverse_complement(detect_reverse_complement),
+          insertion_merge_mode(insertion_merge_mode)
     {
 	        // 加载参考序列，sketch 在读取完成后并行构建，避免串行 I/O 循环承担重计算。
 	        seq_io::KseqReader reader(ref_fasta_path);
@@ -179,7 +181,8 @@ namespace align {
             opt.profile_ref_min,
             opt.profile_ref_max,
             opt.profile_ref_min_similarity,
-            opt.detect_reverse_complement)
+            opt.detect_reverse_complement,
+            parseInsertionMergeMode(opt.insertion_merge))
     {
     }
 
