@@ -31,7 +31,6 @@ add_executable(halign4
         src/mash/xxhash.c
         src/mash/mash.cpp
         src/mash/mash_bitset.cpp
-        src/mash/mash_bitset_sse.cpp
         src/consensus/selector.cpp
         src/consensus/consensus.cpp
         src/align/ref_aligner.cpp

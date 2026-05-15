@@ -9,12 +9,12 @@
 #include <unordered_map>
 #include <utility>
 
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#include <emmintrin.h>
+#endif
+
 namespace mash {
 namespace detail {
-    std::size_t bitsetAndPopcountSse2(const std::uint64_t* a,
-                                      const std::uint64_t* b,
-                                      std::size_t words) noexcept;
-
     std::size_t bitsetAndPopcountScalar(const std::uint64_t* a,
                                         const std::uint64_t* b,
                                         std::size_t words) noexcept
@@ -24,6 +24,33 @@ namespace detail {
             count += static_cast<std::size_t>(std::popcount(a[i] & b[i]));
         }
         return count;
+    }
+
+    std::size_t bitsetAndPopcountSse2(const std::uint64_t* a,
+                                      const std::uint64_t* b,
+                                      std::size_t words) noexcept
+    {
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+        std::size_t count = 0;
+        std::size_t i = 0;
+        alignas(16) std::uint64_t tmp[2];
+
+        for (; i + 1 < words; i += 2) {
+            const __m128i av = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a + i));
+            const __m128i bv = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + i));
+            const __m128i both = _mm_and_si128(av, bv);
+            _mm_store_si128(reinterpret_cast<__m128i*>(tmp), both);
+            count += static_cast<std::size_t>(std::popcount(tmp[0]));
+            count += static_cast<std::size_t>(std::popcount(tmp[1]));
+        }
+
+        if (i < words) {
+            count += static_cast<std::size_t>(std::popcount(a[i] & b[i]));
+        }
+        return count;
+#else
+        return bitsetAndPopcountScalar(a, b, words);
+#endif
     }
 
     std::size_t bitsetAndPopcount(const std::uint64_t* a,
@@ -226,16 +253,13 @@ namespace detail {
         return matches.empty() ? SketchMatch{} : matches.front();
     }
 
-    std::vector<SketchMatch> SketchBitsetIndex::findTopK(const Sketch& query,
-                                                         std::size_t min_count,
-                                                         std::size_t max_count,
-                                                         double similarity_ratio) const
+    std::vector<SketchMatch> SketchBitsetIndex::findAll(const Sketch& query) const
     {
         if (ids_.empty()) {
             return {};
         }
         if (has_k_ && query.k != k_) {
-            throw std::invalid_argument("SketchBitsetIndex::findTopK: mismatched sketch k");
+            throw std::invalid_argument("SketchBitsetIndex::findAll: mismatched sketch k");
         }
 
         std::vector<SketchMatch> matches;
@@ -245,7 +269,7 @@ namespace detail {
             for (const std::string& id : ids_) {
                 matches.push_back(SketchMatch{id, 0.0, true});
             }
-            return selectAdaptiveTopMatches(std::move(matches), min_count, max_count, similarity_ratio);
+            return matches;
         }
 
         thread_local std::vector<std::uint64_t> query_words;
@@ -272,6 +296,14 @@ namespace detail {
             matches.push_back(SketchMatch{ids_[row], score, true});
         }
 
-        return selectAdaptiveTopMatches(std::move(matches), min_count, max_count, similarity_ratio);
+        return matches;
+    }
+
+    std::vector<SketchMatch> SketchBitsetIndex::findTopK(const Sketch& query,
+                                                         std::size_t min_count,
+                                                         std::size_t max_count,
+                                                         double similarity_ratio) const
+    {
+        return selectAdaptiveTopMatches(findAll(query), min_count, max_count, similarity_ratio);
     }
 } // namespace mash

@@ -53,6 +53,7 @@ namespace align {
     using SeedHit = minimizer::MinimizerHit;   // (ref_pos, query_pos, hash)
     using SeedHits = std::vector<SeedHit>;
     static constexpr seed::SeedKind kSeedKind = seed::SeedKind::minimizer;
+	constexpr std::size_t kSketchBitsetRefThreshold = 10;
 
     struct ProfileMatrix{
         int len;
@@ -60,165 +61,38 @@ namespace align {
         int depth;              /* profile 总序列数 */
         std::vector<uint32_t> prof;   /* 每列 dim 个计数；前 m 个通常是 residue/base 计数 */
 
-        ProfileMatrix() : len(0), dim(5), depth(0), prof() {}
+        ProfileMatrix();
 
         // 从单条序列构造 profile：每列仅一个碱基计数为 1，其余为 0。
         // 约定 A/C/G/T/N -> 0/1/2/3/4，非法字符按 N 处理，保持与项目 DNA5 语义一致。
-        explicit ProfileMatrix(const std::string& seq) : len(static_cast<int>(seq.size())), dim(5), depth(seq.empty() ? 0 : 1), prof(static_cast<std::size_t>(len) * 5, 0U) {
-            for (int i = 0; i < len; ++i) {
-                const char ch = seq[static_cast<std::size_t>(i)];
-                const int idx = baseIndex(ch);
-                prof[static_cast<std::size_t>(i) * 5 + static_cast<std::size_t>(idx)] = 1U;
-            }
-        }
+        explicit ProfileMatrix(const std::string& seq);
 
-        explicit ProfileMatrix(const consensus::ConsensusJson& cj)
-            : ProfileMatrix(fromConsensusCounts(cj))
-        {
-        }
+        explicit ProfileMatrix(const consensus::ConsensusJson& cj);
 
-        static int baseIndex(char ch)
-        {
-            switch (ch) {
-            case 'A': case 'a': return 0;
-            case 'C': case 'c': return 1;
-            case 'G': case 'g': return 2;
-            case 'T': case 't': return 3;
-            case 'U': case 'u': return 3; // RNA/U 按 T 处理
-            case 'N': case 'n': return 4;
-            default: return 4;
-            }
-        }
+        static int baseIndex(char ch);
 
-        static bool isGap(char ch)
-        {
-            return ch == '-' || ch == '.';
-        }
+        static bool isGap(char ch);
 
-        static ProfileMatrix fromAlignedSequence(const std::string& seq)
-        {
-            if (seq.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-                throw std::runtime_error("ProfileMatrix::fromAlignedSequence: alignment is too long");
-            }
-
-            ProfileMatrix pm;
-            pm.len = static_cast<int>(seq.size());
-            pm.dim = 5;
-            pm.depth = 1;
-            pm.prof.assign(seq.size() * static_cast<std::size_t>(pm.dim), 0U);
-
-            for (std::size_t i = 0; i < seq.size(); ++i) {
-                const char ch = seq[i];
-                if (isGap(ch)) {
-                    continue;
-                }
-                const std::size_t idx = static_cast<std::size_t>(baseIndex(ch));
-                ++pm.prof[i * static_cast<std::size_t>(pm.dim) + idx];
-            }
-
-            return pm;
-        }
+        static ProfileMatrix fromAlignedSequence(const std::string& seq);
 
         // 从已对齐序列构建 profile：列坐标保持 MSA 坐标；gap 不进入 DNA5 计数，
         // depth 仍记录参与统计的序列总数，使 gap-rich 列在 profile 中表现为低覆盖列。
-        static ProfileMatrix fromAlignedSequences(const std::vector<std::string>& aligned_sequences)
-        {
-            if (aligned_sequences.empty()) {
-                return ProfileMatrix();
-            }
-            if (aligned_sequences.size() == 1) {
-                return fromAlignedSequence(aligned_sequences.front());
-            }
-
-            const std::size_t aln_len = aligned_sequences.front().size();
-            if (aln_len > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-                throw std::runtime_error("ProfileMatrix::fromAlignedSequences: alignment is too long");
-            }
-            if (aligned_sequences.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-                throw std::runtime_error("ProfileMatrix::fromAlignedSequences: profile depth is too large");
-            }
-
-            ProfileMatrix pm;
-            pm.len = static_cast<int>(aln_len);
-            pm.dim = 5;
-            pm.depth = static_cast<int>(aligned_sequences.size());
-            pm.prof.assign(aln_len * static_cast<std::size_t>(pm.dim), 0U);
-
-            for (const std::string& seq : aligned_sequences) {
-                if (seq.size() != aln_len) {
-                    throw std::runtime_error("ProfileMatrix::fromAlignedSequences: alignment length mismatch");
-                }
-
-                for (std::size_t i = 0; i < aln_len; ++i) {
-                    const char ch = seq[i];
-                    if (isGap(ch)) {
-                        continue;
-                    }
-                    const std::size_t idx = static_cast<std::size_t>(baseIndex(ch));
-                    ++pm.prof[i * static_cast<std::size_t>(pm.dim) + idx];
-                }
-            }
-
-            return pm;
-        }
+        static ProfileMatrix fromAlignedSequences(const std::vector<std::string>& aligned_sequences);
 
         // 从 consensus 统计计数构建 profile，避免 RefAligner 重新扫描 MSA 文件。
         // U 按 T 合并；gap 只通过 depth 与列总碱基数的差值体现，不占用额外维度。
-        static ProfileMatrix fromConsensusCounts(const consensus::ConsensusJson& cj)
-        {
-            if (cj.aln_len > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
-                throw std::runtime_error("ProfileMatrix::fromConsensusCounts: alignment is too long");
-            }
-            if (cj.num_seqs > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
-                throw std::runtime_error("ProfileMatrix::fromConsensusCounts: profile depth is too large");
-            }
-            if (cj.counts.size() != static_cast<std::size_t>(cj.aln_len)) {
-                throw std::runtime_error("ProfileMatrix::fromConsensusCounts: counts length mismatch");
-            }
-
-            ProfileMatrix pm;
-            pm.len = static_cast<int>(cj.aln_len);
-            pm.dim = 5;
-            pm.depth = static_cast<int>(cj.num_seqs);
-            pm.prof.assign(static_cast<std::size_t>(pm.len) * static_cast<std::size_t>(pm.dim), 0U);
-
-            for (std::size_t i = 0; i < cj.counts.size(); ++i) {
-                const consensus::SiteCount& sc = cj.counts[i];
-                const std::size_t off = i * static_cast<std::size_t>(pm.dim);
-                pm.prof[off + 0] = sc.a;
-                pm.prof[off + 1] = sc.c;
-                pm.prof[off + 2] = sc.g;
-                const std::uint64_t t_total = static_cast<std::uint64_t>(sc.t) + static_cast<std::uint64_t>(sc.u);
-                pm.prof[off + 3] = static_cast<std::uint32_t>(t_total);
-                pm.prof[off + 4] = sc.n;
-            }
-
-            return pm;
-        }
+        static ProfileMatrix fromConsensusCounts(const consensus::ConsensusJson& cj);
     };
 
 	using ProfileMatrixMap = std::unordered_map<std::string, ProfileMatrix>;
 
+    ProfileMatrix combineProfilesEqualWeight(const std::vector<const ProfileMatrix*>& profiles);
+    std::string profileToGappedSequence(const ProfileMatrix& profile);
+    seq_io::SeqRecord reverseComplementRecord(const seq_io::SeqRecord& rec);
+
 
     // DNA 字符映射到 0..4（A/C/G/T/N，大小写不敏感；其他字符按 N）
-    static constexpr uint8_t ScoreChar2Idx[256] = {
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 0-15
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 16-31
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 32-47 (空格等)
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 48-63 (数字)
-        4,0,4,1,4,4,4,2,4,4,4,4,4,4,4,4,  // 64-79  (@,A,B,C,D,E,F,G,H,I,J,K,L,M,N,O)
-        4,4,4,4,3,4,4,4,4,4,4,4,4,4,4,4,  // 80-95  (P,Q,R,S,T,U,V,W,X,Y,Z,...)
-        4,0,4,1,4,4,4,2,4,4,4,4,4,4,4,4,  // 96-111 (`,a,b,c,d,e,f,g,h,i,j,k,l,m,n,o)
-        4,4,4,4,3,4,4,4,4,4,4,4,4,4,4,4,  // 112-127(p,q,r,s,t,u,v,w,x,y,z,...)
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 128-143
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 144-159
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 160-175
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 176-191
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 192-207
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 208-223
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 224-239
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4   // 240-255
-    };
+    extern const uint8_t ScoreChar2Idx[256];
     // TODO 增加用户自定义矩阵
     // DNA5 替换矩阵（A/C/G/T/N）：match=+5，mismatch=-4，涉及 N 为 0。
     // 该矩阵需配合 KSW_EZ_GENERIC_SC 使用。
@@ -231,14 +105,7 @@ namespace align {
  //        0,  0,  0,  0,  0   // N (i=4)
  // };
      // mafft 风格
-	static constexpr int8_t dna5_simd_mat[25] = {
-		// A   C   G   T   N
-		 4, -2,  1, -2,  0,  // A (i=0)
-	    -2,  4, -2,  1,  0,  // C (i=1)
-	     1, -2,  4, -2,  0,  // G (i=2)
-	    -2,  1, -2,  4,  0,  // T (i=3)
-		 0,  0,  0,  0,  0   // N (i=4)
- };
+	extern const int8_t dna5_simd_mat[25];
 
     // KSW2 参数配置（默认值与当前实现一致）
     struct AlignConfig {
@@ -255,19 +122,7 @@ namespace align {
 
     // 自动估计 band 宽度：长度差异过大时返回 -1（禁用 band）
     //------------------------------------------- 带宽估计
-    inline int auto_band(int qlen, int tlen,
-        double indel_rate = 0.1,
-        int    margin = 200)
-    {
-        // 长度差异过大时不适合 banded DP
-        if ((double)std::abs(qlen - tlen) / (double)std::max(qlen, tlen) > 0.5)
-        {
-            return -1;
-        }
-        // 经验公式：预期 indel 规模 + 安全边距
-        return margin + static_cast<int>(indel_rate * (qlen + tlen / 2));
-
-    }
+    int auto_band(int qlen, int tlen, double indel_rate = 0.1, int margin = 200);
 
     // 对齐接口统一返回 CIGAR；输入允许 A/C/G/T/N（其他字符按 N 处理）
 
@@ -288,6 +143,11 @@ namespace align {
     using AlignFunc = std::function<cigar::Cigar_t(const std::string&, const std::string&)>;
 
     // 基于锚点的分段全局比对；锚点无效时退化为普通全局比对
+    cigar::Cigar_t globalAlignMM2(const std::string& ref,
+                                  const std::string& query,
+                                  const anchor::Anchors& anchors,
+                                  align::AlignConfig cfg = align::AlignConfig{});
+
     cigar::Cigar_t globalAlignSeq2Seq(const std::string& ref,
                                       const std::string& query,
                                       const anchor::Anchors& anchors,
@@ -314,7 +174,7 @@ namespace align {
         // 直接参数构造：读取参考、构建索引、准备共识序列
         RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path,
                    int kmer_size = 19, int window_size = 19,
-                   int sketch_size = 30000, int sketch_kmer_size = 21,
+                   int sketch_size = 30000, int profile_ref_kmer_len = 10,
                    bool noncanonical = true,
                    int threads = 1, std::string msa_cmd = "",
                    bool keep_length = false,
@@ -323,9 +183,9 @@ namespace align {
                    std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX,
                    int gap_open = 10,
                    int gap_extend = 2,
-                   int profile_k_min = 1,
-                   int profile_k_max = 5,
-                   double profile_k_similarity_ratio = 0.95,
+                   int profile_ref_min = 15,
+                   int profile_ref_max = 40,
+                   double profile_ref_min_similarity = 0.7,
                    bool detect_reverse_complement = false);
 
         // Options 构造（推荐）
@@ -474,8 +334,8 @@ namespace align {
         int kmer_size = 21;
         int window_size = 10;
         int sketch_size = 2000;
-        // 仅用于 sketch 构建的 k-mer 大小，与 minimizer 的 kmer_size 解耦。
-        int sketch_kmer_size = 21;
+        // 仅用于 profile reference sketch 构建的 k-mer 大小，与 minimizer 的 kmer_size 解耦。
+        int profile_ref_kmer_len = 10;
         int random_seed = 42;
 
         // 并行与外部工具配置
@@ -488,9 +348,9 @@ namespace align {
         std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX;
         int gap_open = 10;
         int gap_extend = 2;
-        int profile_k_min = 1;
-        int profile_k_max = 5;
-        double profile_k_similarity_ratio = 0.95;
+        int profile_ref_min = 15;
+        int profile_ref_max = 40;
+        double profile_ref_min_similarity = 0.7;
         bool detect_reverse_complement = false;
 
         // 是否考虑反向互补

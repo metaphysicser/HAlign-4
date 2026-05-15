@@ -36,20 +36,20 @@ static void checkOption(Options& opt) {
     // 数值校验
     if (opt.threads <= 0) throw std::runtime_error("threads must be > 0");
     if (opt.kmer_size <= 0) throw std::runtime_error("kmer_size must be > 0");
-    if (opt.sketch_kmer_size <= 0) throw std::runtime_error("sketch_kmer_size must be > 0");
+    if (opt.profile_ref_kmer_len <= 0) throw std::runtime_error("profile_ref_kmer_len must be > 0");
     if (opt.kmer_window <= 0) throw std::runtime_error("kmer_window must be > 0");
     if (opt.cons_n <= 0) throw std::runtime_error("cons_n must be > 0");
     if (opt.gap_open < 0 || opt.gap_open > 127) throw std::runtime_error("gap_open must be in [0, 127]");
     if (opt.gap_extend < 0 || opt.gap_extend > 127) throw std::runtime_error("gap_extend must be in [0, 127]");
-    if (opt.profile_k_min <= 0) throw std::runtime_error("profile_k_min must be > 0");
-    if (opt.profile_k_max < opt.profile_k_min) {
-        throw std::runtime_error("profile_k_max must be >= profile_k_min");
+    if (opt.profile_ref_min <= 0) throw std::runtime_error("profile_ref_min must be > 0");
+    if (opt.profile_ref_max < opt.profile_ref_min) {
+        throw std::runtime_error("profile_ref_max must be >= profile_ref_min");
     }
-    if (opt.profile_k_similarity_ratio < 0.0 || opt.profile_k_similarity_ratio > 1.0) {
-        throw std::runtime_error("profile_k_similarity_ratio must be in [0, 1]");
+    if (opt.profile_ref_min_similarity < 0.0 || opt.profile_ref_min_similarity > 1.0) {
+        throw std::runtime_error("profile_ref_min_similarity must be in [0, 1]");
     }
     if (opt.kmer_size > 31) throw std::runtime_error("kmer_size too large (must be <= 31)");
-    if (opt.sketch_kmer_size > 31) throw std::runtime_error("sketch_kmer_size too large (must be <= 31)");
+    if (opt.profile_ref_kmer_len > 31) throw std::runtime_error("profile_ref_kmer_len too large (must be <= 31)");
     if (opt.kmer_window >= 256) {
         spdlog::warn("kmer_window >= 256 may be slow; current value: {}", opt.kmer_window);
     }

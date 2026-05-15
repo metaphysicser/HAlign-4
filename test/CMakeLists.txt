@@ -34,7 +34,9 @@ add_library(halign4_test_support STATIC
         "${HALIGN4_ROOT}/src/seed/minimizer.cpp"
         "${HALIGN4_ROOT}/src/seed/anchor.cpp"
         "${HALIGN4_ROOT}/src/mash/mash.cpp"
+        "${HALIGN4_ROOT}/src/mash/mash_bitset.cpp"
         "${HALIGN4_ROOT}/src/align/ref_aligner.cpp"
+        "${HALIGN4_ROOT}/src/align/ref_merger.cpp"
         "${HALIGN4_ROOT}/src/align/ksw2_extz2_sse.c"
         "${HALIGN4_ROOT}/src/align/psw_gg3_sse.c"
         "${HALIGN4_ROOT}/src/align/cigar.cpp"
@@ -189,5 +191,3 @@ add_test(NAME align_perf
 # Anchor 正确性测试（快速）
 add_test(NAME anchor
         COMMAND halign4_tests --test-suite=anchor)
-
-

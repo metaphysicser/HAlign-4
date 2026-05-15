@@ -77,7 +77,14 @@ Number of sequences selected for consensus step (Top-K by sequence length).
 #### `--sketch-size <int>`
 Sketch size used by Mash/MinHash-related components.
 
-- Default: `30000`
+- Default: `3000`
+
+#### `--profile-ref-kmer-len <int>`
+K-mer size used when building mash sketches for profile reference search.
+
+- Default: `10`
+- Range check: `4 .. 31`
+- This is separate from `--kmer-size`, which still controls minimizer/seeding.
 
 #### `-r, --ref <path>`
 Provide an explicit center/reference sequence file (FASTA).
@@ -128,6 +135,13 @@ Set affine gap penalties used by reference alignment.
 - `--gap-open` default: `10`
 - `--gap-extend` default: `2`
 - Both values must be in `[0, 127]`.
+
+#### Profile reference selection: `--profile-ref-*`
+When `-r/--ref` contains multiple reference sequences, `seq2profile` ranks candidate references by HAlign's mash sketch search. Sketch hashes are sorted and deduplicated, and hashes shared by all references may have already been removed. HAlign converts the retained-hash Jaccard score to Mash ANI before applying the sequence-similarity threshold.
+
+- `--profile-ref-min <int>`: keep at least this many references after sorting by Mash ANI. Default: `15`.
+- `--profile-ref-max <int>`: keep at most this many references. Default: `40`.
+- `--profile-ref-min-similarity <float>`: after `--profile-ref-min`, keep additional references only when Mash ANI is at least this value. Default: `0.7`.
 
 #### `-p, --msa-cmd <string>`
 MSA command **keyword** or **command template string**.

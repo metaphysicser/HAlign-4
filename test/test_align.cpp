@@ -562,8 +562,48 @@ TEST_SUITE("align") {
         }
 
         REQUIRE_NOTHROW(app.parse(static_cast<int>(argv.size()), argv.data()));
-        CHECK(opt.center_path == ref.string());
+        CHECK(opt.ref_path == ref.string());
         CHECK(opt.ref_align_path == ref_align.string());
+
+        fs::remove_all(dir, ec);
+    }
+
+    TEST_CASE("CLI setup - parse profile reference options") {
+        namespace fs = std::filesystem;
+
+        const fs::path dir = fs::current_path() / "halign4_tests_cli_profile_ref_options";
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir, ec);
+        REQUIRE_MESSAGE(!ec, "cannot create temp dir: " << dir.string() << " (" << ec.message() << ")");
+
+        const fs::path input = writeMiniFasta(dir / "input.fasta", "input");
+        const fs::path output = dir / "out.fasta";
+
+        Options opt;
+        CLI::App app{"halign4"};
+        setupCli(app, opt);
+
+        std::vector<std::string> args = {
+            "halign4",
+            "-i", input.string(),
+            "-o", output.string(),
+            "--profile-ref-kmer-len", "10",
+            "--profile-ref-min", "15",
+            "--profile-ref-max", "40",
+            "--profile-ref-min-similarity", "0.7"
+        };
+        std::vector<char*> argv;
+        argv.reserve(args.size());
+        for (auto& s : args) {
+            argv.push_back(s.data());
+        }
+
+        REQUIRE_NOTHROW(app.parse(static_cast<int>(argv.size()), argv.data()));
+        CHECK(opt.profile_ref_kmer_len == 10);
+        CHECK(opt.profile_ref_min == 15);
+        CHECK(opt.profile_ref_max == 40);
+        CHECK(opt.profile_ref_min_similarity == doctest::Approx(0.7));
 
         fs::remove_all(dir, ec);
     }

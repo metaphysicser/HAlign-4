@@ -82,6 +82,7 @@ namespace mash
         std::size_t dictionarySize() const noexcept { return dictionary_.size(); }
 
         SketchMatch findBest(const Sketch& query) const;
+        std::vector<SketchMatch> findAll(const Sketch& query) const;
         std::vector<SketchMatch> findTopK(const Sketch& query,
                                           std::size_t min_count,
                                           std::size_t max_count,

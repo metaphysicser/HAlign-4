@@ -4,6 +4,12 @@
 #include <omp.h>
 #endif
 
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <limits>
+#include <stdexcept>
+
 extern "C" {
 #include "alignment/cigar.h"
 #include "wavefront/wavefront_align.h"
@@ -15,6 +21,283 @@ extern "C" {
 
 namespace align
 {
+    namespace {
+        constexpr std::uint32_t kProfileEqualWeightScale = 1024;
+
+        char complementBase(char ch)
+        {
+            switch (ch) {
+                case 'A': case 'a': return 'T';
+                case 'C': case 'c': return 'G';
+                case 'G': case 'g': return 'C';
+                case 'T': case 't': return 'A';
+                case 'U': case 'u': return 'A';
+                case '-': case '.': return ch;
+                default: return 'N';
+            }
+        }
+    } // namespace
+
+    const uint8_t ScoreChar2Idx[256] = {
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 0-15
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 16-31
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 32-47 (空格等)
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 48-63 (数字)
+        4,0,4,1,4,4,4,2,4,4,4,4,4,4,4,4,  // 64-79  (@,A,B,C,D,E,F,G,H,I,J,K,L,M,N,O)
+        4,4,4,4,3,4,4,4,4,4,4,4,4,4,4,4,  // 80-95  (P,Q,R,S,T,U,V,W,X,Y,Z,...)
+        4,0,4,1,4,4,4,2,4,4,4,4,4,4,4,4,  // 96-111 (`,a,b,c,d,e,f,g,h,i,j,k,l,m,n,o)
+        4,4,4,4,3,4,4,4,4,4,4,4,4,4,4,4,  // 112-127(p,q,r,s,t,u,v,w,x,y,z,...)
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 128-143
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 144-159
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 160-175
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 176-191
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 192-207
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 208-223
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 224-239
+        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4   // 240-255
+    };
+
+    const int8_t dna5_simd_mat[25] = {
+        // A   C   G   T   N
+         4, -2,  1, -2,  0,  // A (i=0)
+        -2,  4, -2,  1,  0,  // C (i=1)
+         1, -2,  4, -2,  0,  // G (i=2)
+        -2,  1, -2,  4,  0,  // T (i=3)
+         0,  0,  0,  0,  0   // N (i=4)
+    };
+
+    ProfileMatrix::ProfileMatrix() : len(0), dim(5), depth(0), prof() {}
+
+    ProfileMatrix::ProfileMatrix(const std::string& seq)
+        : len(static_cast<int>(seq.size())),
+          dim(5),
+          depth(seq.empty() ? 0 : 1),
+          prof(static_cast<std::size_t>(len) * 5, 0U)
+    {
+        for (int i = 0; i < len; ++i) {
+            const char ch = seq[static_cast<std::size_t>(i)];
+            const int idx = baseIndex(ch);
+            prof[static_cast<std::size_t>(i) * 5 + static_cast<std::size_t>(idx)] = 1U;
+        }
+    }
+
+    ProfileMatrix::ProfileMatrix(const consensus::ConsensusJson& cj)
+        : ProfileMatrix(fromConsensusCounts(cj))
+    {
+    }
+
+    int ProfileMatrix::baseIndex(char ch)
+    {
+        switch (ch) {
+            case 'A': case 'a': return 0;
+            case 'C': case 'c': return 1;
+            case 'G': case 'g': return 2;
+            case 'T': case 't': return 3;
+            case 'U': case 'u': return 3;
+            case 'N': case 'n': return 4;
+            default: return 4;
+        }
+    }
+
+    bool ProfileMatrix::isGap(char ch)
+    {
+        return ch == '-' || ch == '.';
+    }
+
+    ProfileMatrix ProfileMatrix::fromAlignedSequence(const std::string& seq)
+    {
+        if (seq.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+            throw std::runtime_error("ProfileMatrix::fromAlignedSequence: alignment is too long");
+        }
+
+        ProfileMatrix pm;
+        pm.len = static_cast<int>(seq.size());
+        pm.dim = 5;
+        pm.depth = 1;
+        pm.prof.assign(seq.size() * static_cast<std::size_t>(pm.dim), 0U);
+
+        for (std::size_t i = 0; i < seq.size(); ++i) {
+            const char ch = seq[i];
+            if (isGap(ch)) {
+                continue;
+            }
+            const std::size_t idx = static_cast<std::size_t>(baseIndex(ch));
+            ++pm.prof[i * static_cast<std::size_t>(pm.dim) + idx];
+        }
+
+        return pm;
+    }
+
+    ProfileMatrix ProfileMatrix::fromAlignedSequences(const std::vector<std::string>& aligned_sequences)
+    {
+        if (aligned_sequences.empty()) {
+            return ProfileMatrix();
+        }
+        if (aligned_sequences.size() == 1) {
+            return fromAlignedSequence(aligned_sequences.front());
+        }
+
+        const std::size_t aln_len = aligned_sequences.front().size();
+        if (aln_len > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+            throw std::runtime_error("ProfileMatrix::fromAlignedSequences: alignment is too long");
+        }
+        if (aligned_sequences.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+            throw std::runtime_error("ProfileMatrix::fromAlignedSequences: profile depth is too large");
+        }
+
+        ProfileMatrix pm;
+        pm.len = static_cast<int>(aln_len);
+        pm.dim = 5;
+        pm.depth = static_cast<int>(aligned_sequences.size());
+        pm.prof.assign(aln_len * static_cast<std::size_t>(pm.dim), 0U);
+
+        for (const std::string& seq : aligned_sequences) {
+            if (seq.size() != aln_len) {
+                throw std::runtime_error("ProfileMatrix::fromAlignedSequences: alignment length mismatch");
+            }
+
+            for (std::size_t i = 0; i < aln_len; ++i) {
+                const char ch = seq[i];
+                if (isGap(ch)) {
+                    continue;
+                }
+                const std::size_t idx = static_cast<std::size_t>(baseIndex(ch));
+                ++pm.prof[i * static_cast<std::size_t>(pm.dim) + idx];
+            }
+        }
+
+        return pm;
+    }
+
+    ProfileMatrix ProfileMatrix::fromConsensusCounts(const consensus::ConsensusJson& cj)
+    {
+        if (cj.aln_len > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+            throw std::runtime_error("ProfileMatrix::fromConsensusCounts: alignment is too long");
+        }
+        if (cj.num_seqs > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+            throw std::runtime_error("ProfileMatrix::fromConsensusCounts: profile depth is too large");
+        }
+        if (cj.counts.size() != static_cast<std::size_t>(cj.aln_len)) {
+            throw std::runtime_error("ProfileMatrix::fromConsensusCounts: counts length mismatch");
+        }
+
+        ProfileMatrix pm;
+        pm.len = static_cast<int>(cj.aln_len);
+        pm.dim = 5;
+        pm.depth = static_cast<int>(cj.num_seqs);
+        pm.prof.assign(static_cast<std::size_t>(pm.len) * static_cast<std::size_t>(pm.dim), 0U);
+
+        for (std::size_t i = 0; i < cj.counts.size(); ++i) {
+            const consensus::SiteCount& sc = cj.counts[i];
+            const std::size_t off = i * static_cast<std::size_t>(pm.dim);
+            pm.prof[off + 0] = sc.a;
+            pm.prof[off + 1] = sc.c;
+            pm.prof[off + 2] = sc.g;
+            const std::uint64_t t_total = static_cast<std::uint64_t>(sc.t) +
+                                          static_cast<std::uint64_t>(sc.u);
+            pm.prof[off + 3] = static_cast<std::uint32_t>(t_total);
+            pm.prof[off + 4] = sc.n;
+        }
+
+        return pm;
+    }
+
+    ProfileMatrix combineProfilesEqualWeight(const std::vector<const ProfileMatrix*>& profiles)
+    {
+        if (profiles.empty()) {
+            return ProfileMatrix();
+        }
+
+        const int len = profiles.front()->len;
+        const int dim = profiles.front()->dim;
+        if (len < 0 || dim <= 0) {
+            throw std::runtime_error("combineProfilesEqualWeight: invalid profile shape");
+        }
+
+        ProfileMatrix combined;
+        combined.len = len;
+        combined.dim = dim;
+        combined.depth = static_cast<int>(profiles.size() * kProfileEqualWeightScale);
+        combined.prof.assign(static_cast<std::size_t>(len) * static_cast<std::size_t>(dim), 0U);
+
+        for (const ProfileMatrix* profile : profiles) {
+            if (profile == nullptr || profile->len != len || profile->dim != dim ||
+                profile->prof.size() != static_cast<std::size_t>(len) * static_cast<std::size_t>(dim)) {
+                throw std::runtime_error("combineProfilesEqualWeight: profile shape mismatch");
+            }
+
+            const double denom = profile->depth > 0 ? static_cast<double>(profile->depth) : 1.0;
+            for (std::size_t i = 0; i < profile->prof.size(); ++i) {
+                const double weighted = static_cast<double>(profile->prof[i]) *
+                                        static_cast<double>(kProfileEqualWeightScale) / denom;
+                combined.prof[i] += static_cast<std::uint32_t>(std::llround(weighted));
+            }
+        }
+
+        return combined;
+    }
+
+    std::string profileToGappedSequence(const ProfileMatrix& profile)
+    {
+        if (profile.len < 0 || profile.dim < 5) {
+            throw std::runtime_error("profileToGappedSequence: invalid profile shape");
+        }
+
+        const std::size_t len = static_cast<std::size_t>(profile.len);
+        const std::size_t dim = static_cast<std::size_t>(profile.dim);
+        if (profile.prof.size() < len * dim) {
+            throw std::runtime_error("profileToGappedSequence: profile data is truncated");
+        }
+
+        static constexpr char bases[5] = {'A', 'C', 'G', 'T', 'N'};
+        std::string seq;
+        seq.reserve(len);
+
+        for (std::size_t col = 0; col < len; ++col) {
+            const std::size_t off = col * dim;
+            std::uint64_t total = 0;
+            std::uint32_t best_count = 0;
+            std::size_t best_idx = 4;
+
+            for (std::size_t idx = 0; idx < 5; ++idx) {
+                const std::uint32_t count = profile.prof[off + idx];
+                total += count;
+                if (count > best_count) {
+                    best_count = count;
+                    best_idx = idx;
+                }
+            }
+
+            seq.push_back(total == 0 ? '-' : bases[best_idx]);
+        }
+
+        return seq;
+    }
+
+    seq_io::SeqRecord reverseComplementRecord(const seq_io::SeqRecord& rec)
+    {
+        seq_io::SeqRecord out = rec;
+        out.seq.resize(rec.seq.size());
+        for (std::size_t i = 0; i < rec.seq.size(); ++i) {
+            out.seq[i] = complementBase(rec.seq[rec.seq.size() - 1U - i]);
+        }
+        if (!out.qual.empty()) {
+            std::reverse(out.qual.begin(), out.qual.end());
+        }
+        return out;
+    }
+
+    int auto_band(int qlen, int tlen, double indel_rate, int margin)
+    {
+        // 长度差异过大时不适合 banded DP
+        if ((double)std::abs(qlen - tlen) / (double)std::max(qlen, tlen) > 0.5)
+        {
+            return -1;
+        }
+        // 经验公式：预期 indel 规模 + 安全边距
+        return margin + static_cast<int>(indel_rate * (qlen + tlen / 2));
+    }
+
     // KSW2 全局比对（end-to-end）- 编码序列并调用 KSW2
     cigar::Cigar_t globalAlignKSW2(const std::string& ref, const std::string& query)
     {
@@ -251,6 +534,14 @@ namespace align
 
         free(cigar1);
         return cigar;
+    }
+
+    cigar::Cigar_t globalAlignMM2(const std::string& ref,
+                                  const std::string& query,
+                                  const anchor::Anchors& anchors,
+                                  align::AlignConfig cfg)
+    {
+        return globalAlignSeq2Seq(ref, query, anchors, cfg);
     }
 
     // 基于锚点的分段全局比对（minimap2 风格）

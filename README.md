@@ -59,6 +59,7 @@ The most important parameters are:
 - `--align-ref`: provide the pre-aligned MSA for the `-r/--ref` reference set
 - `-s/--score`: provide a DNA5 scoring matrix file (see `score.example.tsv`)
 - `--gap-open`, `--gap-extend`: control gap open/extension penalties
+- `--profile-ref-min`, `--profile-ref-max`, `--profile-ref-min-similarity`: mash-based reference profile selection controls
 - `--keep-length`: keep reference length coordinate rules
 
 For the full parameter list and detailed examples, see [`docs/usage.md`](docs/usage.md).
@@ -76,4 +77,3 @@ See [`docs/test.md`](docs/test.md) for how to run tests under the `test/` direct
 If you use HAlign-4 in academic work, please cite:
 
 HAlign 4: a new strategy for rapidly aligning millions of sequences. Bioinformatics, 2024, 40(12): btae718. https://doi.org/10.1093/bioinformatics/btae718
-

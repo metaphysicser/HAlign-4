@@ -205,10 +205,10 @@ struct Options {
 	int kmer_window = 19;       // --kmer-window：minimizer 窗口大小 w（以 k-mer 为单位）
 	int cons_n = 1000;          // --cons-n：挑选用于共识计算的序列数量（Top-K by length）
 	int sketch_size = 3000;     // --sketch-size：用于 sketch 的大小（默认 3000）
-    // 说明：将 sketch 的 k-mer 大小与 minimizer 的 k-mer 大小解耦。
+    // 说明：将 profile reference search 的 sketch k-mer 大小与 minimizer 的 k-mer 大小解耦。
     // - kmer_size 仍用于 minimizer/锚点；
-    // - sketch_kmer_size 仅用于 mash::sketchFromSequence，默认 21。
-    int sketch_kmer_size = 21;  // --sketch-kmer-size：用于 sketch 的 k-mer 大小（默认 21）
+    // - profile_ref_kmer_len 仅用于 mash::sketchFromSequence，默认 10。
+    int profile_ref_kmer_len = 10; // --profile-ref-kmer-len：用于 profile reference search 的 sketch k-mer 大小
 	int batch_size = 0;         // --batch-size：对齐批大小；0 表示按模式使用内置默认值
 	bool wfa = false;           // --wfa：启用 WFA 开关（默认关闭，保证现有行为不变）
 	bool seq2seq = false;       // --seq2seq：开启后使用 seq2seq 比对路径；默认使用 seq2profile
@@ -216,9 +216,9 @@ struct Options {
     std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX;
     int gap_open = 10;          // --gap-open：gap open 罚分
     int gap_extend = 2;         // --gap-extend：gap extend 罚分
-    int profile_k_min = 1;      // --profile-k-min：自适应 profile 集合最小数量
-    int profile_k_max = 5;      // --profile-k-max：自适应 profile 集合最大数量
-    double profile_k_similarity_ratio = 0.95; // --profile-k-ratio：相对最佳相似度阈值
+    int profile_ref_min = 15;   // --profile-ref-min：每条 query 至少使用的参考 profile 数
+    int profile_ref_max = 40;   // --profile-ref-max：最多使用的参考 profile 数
+    double profile_ref_min_similarity = 0.7; // --profile-ref-min-similarity：Mash ANI 序列相似度阈值
     bool detect_reverse_complement = false; // --detect-rc：自动检测并使用反向互补 query
 
 	// keep length 相关开关：
@@ -354,13 +354,13 @@ static void setupCli(CLI::App& app, Options& opt) {
         ->check(CLI::Range(1, 10000000))
         ->group("Detailed options");
 
-    // --sketch-kmer-size：仅用于 sketch 构建的 k-mer 大小。
+    // --profile-ref-kmer-len：仅用于 profile reference search 的 sketch 构建。
     // 说明：
     // - 该参数不会影响 minimizer 的 k（minimizer 仍使用 --kmer-size）；
     // - 这样可以在不改变 anchor 密度的前提下独立调节 sketch 稳定性。
-    app.add_option("--sketch-kmer-size", opt.sketch_kmer_size,
-                   "K-mer size used specifically for sketch construction.")
-        ->default_val(21)
+    app.add_option("--profile-ref-kmer-len", opt.profile_ref_kmer_len,
+                   "K-mer size used specifically for profile reference mash sketch search.")
+        ->default_val(10)
         ->check(CLI::Range(4, 31))
         ->group("Detailed options");
     // --batch-size：对齐阶段批大小。
@@ -389,21 +389,21 @@ static void setupCli(CLI::App& app, Options& opt) {
         ->check(CLI::Range(0, 127))
         ->group("Detailed options");
 
-    app.add_option("--profile-k-min", opt.profile_k_min,
-                   "Minimum number of similar reference profiles to combine.")
-        ->default_val(1)
+    app.add_option("--profile-ref-min", opt.profile_ref_min,
+                   "Minimum number of mash-ranked reference profiles to combine.")
+        ->default_val(15)
         ->check(CLI::Range(1, 100000))
         ->group("Detailed options");
 
-    app.add_option("--profile-k-max", opt.profile_k_max,
-                   "Maximum number of similar reference profiles to combine.")
-        ->default_val(5)
+    app.add_option("--profile-ref-max", opt.profile_ref_max,
+                   "Maximum number of mash-ranked reference profiles to combine.")
+        ->default_val(40)
         ->check(CLI::Range(1, 100000))
         ->group("Detailed options");
 
-    app.add_option("--profile-k-ratio", opt.profile_k_similarity_ratio,
-                   "Keep profiles with similarity >= best_similarity * ratio after profile-k-min.")
-        ->default_val(0.95)
+    app.add_option("--profile-ref-min-similarity", opt.profile_ref_min_similarity,
+                   "Minimum Mash ANI sequence similarity for references after --profile-ref-min.")
+        ->default_val(0.7)
         ->check(CLI::Range(0.0, 1.0))
         ->group("Detailed options");
 
@@ -456,7 +456,7 @@ static void logParsedOptions(const Options& opt) {
         {"msa_cmd", toString(opt.msa_cmd, valW)},
         {"threads", std::to_string(opt.threads)},
         {"kmer-size", std::to_string(opt.kmer_size)},
-        {"sketch-kmer-size", std::to_string(opt.sketch_kmer_size)},
+        {"profile-ref-kmer-len", std::to_string(opt.profile_ref_kmer_len)},
         {"kmer-window", std::to_string(opt.kmer_window)},
         {"cons_n", std::to_string(opt.cons_n)},
         {"sketch_size", std::to_string(opt.sketch_size)},
@@ -464,9 +464,9 @@ static void logParsedOptions(const Options& opt) {
         {"score", toString(opt.score_path, valW)},
         {"gap-open", std::to_string(opt.gap_open)},
         {"gap-extend", std::to_string(opt.gap_extend)},
-        {"profile-k-min", std::to_string(opt.profile_k_min)},
-        {"profile-k-max", std::to_string(opt.profile_k_max)},
-        {"profile-k-ratio", std::to_string(opt.profile_k_similarity_ratio)},
+        {"profile-ref-min", std::to_string(opt.profile_ref_min)},
+        {"profile-ref-max", std::to_string(opt.profile_ref_max)},
+        {"profile-ref-min-similarity", std::to_string(opt.profile_ref_min_similarity)},
         {"detect-rc", boolToStr(opt.detect_reverse_complement)},
         {"wfa", boolToStr(opt.wfa)},
         {"seq2seq", boolToStr(opt.seq2seq)},
@@ -633,4 +633,3 @@ inline std::string getCommandLine(int argc, char** argv) {
 }
 
 #endif // CONFIG_HPP
-
