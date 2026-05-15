@@ -311,7 +311,8 @@ static void setupCli(CLI::App& app, Options& opt) {
     // - 该参数不是可执行文件，也不是普通的“可选字符串”，因此直接按存在文件路径校验。
     app.add_option("--reference-msa", opt.reference_msa_path,
                    "Pre-aligned MSA file for the reference set provided by -r/--reference.")
-        ->check(CLI::ExistingFile);
+        ->check(CLI::ExistingFile)
+		->group("Detailed options");;
 
     // 如果 --msa-tool 是“可执行文件路径”，ExistingFile 通常也能用；
     // 若你希望允许仅命令名（在 PATH 中），这里就不要 check
@@ -329,7 +330,8 @@ static void setupCli(CLI::App& app, Options& opt) {
     // - 默认使用 minipoa（不传 --msa-tool 等价于 --msa-tool minipoa）；
     // - 该命令会在参数校验阶段用一个 tiny.fasta 做一次 smoke test，若环境缺少该工具会直接报错。
     app.add_option("--msa-tool", opt.msa_tool,
-                   "High-quality MSA method: keyword {minipoa|mafft|clustalo} or a custom command template containing {input} and {output} (optional {thread}).");
+                   "High-quality MSA method: keyword {minipoa|mafft|clustalo} or a custom command template containing {input} and {output} (optional {thread}).")
+					->group("Detailed options");;
 
     // -t/--threads：线程数。
     // 说明：
@@ -390,7 +392,8 @@ static void setupCli(CLI::App& app, Options& opt) {
     app.add_option("--batch-size", opt.batch_size,
                    "Alignment batch size (0 estimates from sequence count).")
         ->default_val(0)
-        ->check(CLI::Range(0, 100000000));
+        ->check(CLI::Range(0, 100000000))
+		->group("Detailed options");;
 
     app.add_option("--score-matrix", opt.score_matrix_path,
                    "DNA5 alignment scoring matrix file for A/C/G/T/N (25 signed int8 scores).")
@@ -462,7 +465,9 @@ static void setupCli(CLI::App& app, Options& opt) {
     // workdir 管理：是否在完成后保留工作目录
     // --save-workdir：保留工作目录（默认会删除）。
     app.add_flag("--save-workdir", opt.save_workdir,
-        "Keep the working directory after completion (default: remove). Useful for debugging.");
+        "Keep the working directory after completion (default: remove). Useful for debugging.")
+		->group("Detailed options");;
+
 }
 
 // logParsedOptions：把解析后的参数以漂亮的表格形式输出到日志
