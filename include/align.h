@@ -54,7 +54,8 @@ namespace align {
     using SeedHits = std::vector<SeedHit>;
     static constexpr seed::SeedKind kSeedKind = seed::SeedKind::minimizer;
 	constexpr std::size_t kSketchBitsetRefThreshold = 10;
-
+	constexpr unsigned kProfileEqualWeightShift = 10;
+	constexpr std::uint32_t kProfileEqualWeightScale = 1U << kProfileEqualWeightShift;
     struct ProfileMatrix{
         int len;
         int dim;

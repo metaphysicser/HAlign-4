@@ -21,8 +21,6 @@ extern "C" {
 namespace align
 {
     namespace {
-        constexpr unsigned kProfileEqualWeightShift = 10;
-        constexpr std::uint32_t kProfileEqualWeightScale = 1U << kProfileEqualWeightShift;
 
         char complementBase(char ch)
         {

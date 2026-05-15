@@ -210,38 +210,140 @@ namespace align {
     }
 
     void RefAligner::refreshNormalizedReferenceProfiles(const std::vector<std::string>& ref_ids)
+{
+    if (ref_ids.empty()) {
+        return;
+    }
+
+    std::vector<std::string> unique_ids = ref_ids;
+    std::sort(unique_ids.begin(), unique_ids.end());
+    unique_ids.erase(std::unique(unique_ids.begin(), unique_ids.end()), unique_ids.end());
+
+    // 避免后面 emplace 时 rehash。
+    normalized_ref_profile.reserve(ref_profile.size());
+
+    // 先确保 normalized_ref_profile 中存在对应 key。
+    // 注意：不要在并行区里访问 / 修改 unordered_map。
+    for (const std::string& ref_id : unique_ids) {
+        if (normalized_ref_profile.find(ref_id) == normalized_ref_profile.end()) {
+            normalized_ref_profile.emplace(ref_id, ProfileMatrix());
+        }
+    }
+
+    struct NormalizeTask {
+        const ProfileMatrix* src = nullptr;
+        ProfileMatrix* dst = nullptr;
+    };
+
+    std::vector<NormalizeTask> tasks;
+    tasks.reserve(unique_ids.size());
+
+    for (const std::string& ref_id : unique_ids) {
+        auto src_it = ref_profile.find(ref_id);
+        if (src_it == ref_profile.end()) {
+            throw std::runtime_error("Reference profile '" + ref_id + "' not found");
+        }
+
+        auto dst_it = normalized_ref_profile.find(ref_id);
+        if (dst_it == normalized_ref_profile.end()) {
+            throw std::runtime_error("Normalized reference profile '" + ref_id + "' not found");
+        }
+
+        const ProfileMatrix& src = src_it->second;
+
+        if (src.len < 0 || src.dim <= 0) {
+            throw std::runtime_error("refreshNormalizedReferenceProfiles: invalid profile shape for '" + ref_id + "'");
+        }
+
+        const std::size_t n_cells =
+            static_cast<std::size_t>(src.len) * static_cast<std::size_t>(src.dim);
+
+        if (src.prof.size() != n_cells) {
+            throw std::runtime_error("refreshNormalizedReferenceProfiles: profile size mismatch for '" + ref_id + "'");
+        }
+
+        tasks.push_back(NormalizeTask{&src_it->second, &dst_it->second});
+    }
+
+    auto is_power_of_two = [](std::uint64_t x) -> bool {
+        return x != 0 && (x & (x - 1)) == 0;
+    };
+
+    auto log2_u64 = [](std::uint64_t x) -> unsigned {
+        unsigned shift = 0;
+        while (x > 1) {
+            x >>= 1;
+            ++shift;
+        }
+        return shift;
+    };
+
+    auto normalize_into = [is_power_of_two, log2_u64](
+        const ProfileMatrix& src,
+        ProfileMatrix& dst)
     {
-        if (ref_ids.empty()) {
+        const std::size_t n_cells =
+            static_cast<std::size_t>(src.len) * static_cast<std::size_t>(src.dim);
+
+        dst.len = src.len;
+        dst.dim = src.dim;
+        dst.depth = static_cast<int>(kProfileEqualWeightScale);
+
+        // 关键：resize 会复用已有 capacity，避免每次 refresh 都重新分配大块内存。
+        dst.prof.resize(n_cells);
+
+        const std::uint32_t* src_data = src.prof.data();
+        std::uint32_t* dst_data = dst.prof.data();
+
+        const std::uint64_t depth =
+            src.depth > 0 ? static_cast<std::uint64_t>(src.depth) : 1ULL;
+
+        if (depth == static_cast<std::uint64_t>(kProfileEqualWeightScale)) {
+            std::copy(src_data, src_data + n_cells, dst_data);
             return;
         }
 
-        std::vector<std::string> unique_ids = ref_ids;
-        std::sort(unique_ids.begin(), unique_ids.end());
-        unique_ids.erase(std::unique(unique_ids.begin(), unique_ids.end()), unique_ids.end());
+        if (is_power_of_two(depth)) {
+            const unsigned depth_shift = log2_u64(depth);
 
-        std::vector<const ProfileMatrix*> profiles;
-        profiles.reserve(unique_ids.size());
-        for (const std::string& ref_id : unique_ids) {
-            const auto profile_it = ref_profile.find(ref_id);
-            if (profile_it == ref_profile.end()) {
-                throw std::runtime_error("Reference profile '" + ref_id + "' not found");
+            for (std::size_t i = 0; i < n_cells; ++i) {
+                std::uint64_t numerator;
+
+                if constexpr (kProfileEqualWeightScale == 1024) {
+                    numerator = static_cast<std::uint64_t>(src_data[i]) << 10;
+                } else {
+                    numerator = static_cast<std::uint64_t>(src_data[i]) *
+                                static_cast<std::uint64_t>(kProfileEqualWeightScale);
+                }
+
+                numerator += depth >> 1;
+
+                dst_data[i] = static_cast<std::uint32_t>(numerator >> depth_shift);
             }
-            profiles.push_back(&profile_it->second);
+
+            return;
         }
 
-        const int build_threads = std::max(1, threads > 0 ? threads : omp_get_max_threads());
-        std::vector<ProfileMatrix> normalized_profiles(unique_ids.size());
+        for (std::size_t i = 0; i < n_cells; ++i) {
+            std::uint64_t numerator =
+                static_cast<std::uint64_t>(src_data[i]) *
+                static_cast<std::uint64_t>(kProfileEqualWeightScale);
 
-#pragma omp parallel for default(none) schedule(dynamic) num_threads(build_threads) shared(profiles, normalized_profiles)
-        for (std::int64_t i = 0; i < static_cast<std::int64_t>(profiles.size()); ++i) {
-            normalized_profiles[static_cast<std::size_t>(i)] =
-                normalizeProfileEqualWeight(*profiles[static_cast<std::size_t>(i)]);
-        }
+            numerator += depth / 2;
 
-        for (std::size_t i = 0; i < unique_ids.size(); ++i) {
-            normalized_ref_profile[unique_ids[i]] = std::move(normalized_profiles[i]);
+            dst_data[i] = static_cast<std::uint32_t>(numerator / depth);
         }
+    };
+
+    const int build_threads = std::max(1, threads > 0 ? threads : omp_get_max_threads());
+
+#pragma omp parallel for default(none) schedule(static) num_threads(build_threads) \
+    shared(tasks, normalize_into)
+    for (std::int64_t i = 0; i < static_cast<std::int64_t>(tasks.size()); ++i) {
+        NormalizeTask& task = tasks[static_cast<std::size_t>(i)];
+        normalize_into(*task.src, *task.dst);
     }
+}
 
     AlignConfig RefAligner::makeAlignConfig() const
     {
@@ -554,129 +656,430 @@ namespace align {
     }
 
     bool RefAligner::applyCigarToProfile(
-        const std::string& query_seq,
-        const cigar::Cigar_t& cigar,
-        ProfileMatrix& target_profile)
-    {
-        // 关键约束：这里只做“计数累加”，不改变 profile 的列数/维度，避免影响现有比对逻辑。
-        const std::size_t profile_len = static_cast<std::size_t>(target_profile.len);
-        const std::size_t profile_dim = static_cast<std::size_t>(target_profile.dim);
+    const std::string& query_seq,
+    const cigar::Cigar_t& cigar,
+    ProfileMatrix& target_profile)
+	{
+	    // 关键约束：这里只做“计数累加”，不改变 profile 的列数/维度，避免影响现有比对逻辑。
+	    if (target_profile.len < 0 || target_profile.dim <= 0) {
+	        return false;
+	    }
 
-        if (profile_dim == 0 || target_profile.prof.size() != profile_len * profile_dim) {
-            return false;
-        }
+	    const std::size_t profile_len = static_cast<std::size_t>(target_profile.len);
+	    const std::size_t profile_dim = static_cast<std::size_t>(target_profile.dim);
+	    const std::size_t query_len = query_seq.size();
 
-        std::size_t ref_pos = 0;
-        std::size_t qry_pos = 0;
+	    if (profile_dim == 0 || target_profile.prof.size() != profile_len * profile_dim) {
+	        return false;
+	    }
 
-        for (const cigar::CigarUnit unit : cigar) {
-            char op = '\0';
-            std::uint32_t len = 0;
-            cigar::intToCigar(unit, op, len);
+	    std::uint32_t* prof_data = target_profile.prof.data();
+	    const unsigned char* query_data =
+	        reinterpret_cast<const unsigned char*>(query_seq.data());
 
-            switch (op) {
-                case 'M':
-                case '=':
-                case 'X': {
-                    // M/=/X 同时消耗参考和 query：把 query 当前碱基累加到对应参考列。
-                    for (std::uint32_t k = 0; k < len; ++k) {
-                        if (ref_pos >= profile_len || qry_pos >= query_seq.size()) {
-                            return false;
-                        }
-                        const std::size_t base_idx = static_cast<std::size_t>(
-                            align::ScoreChar2Idx[static_cast<unsigned char>(query_seq[qry_pos])]);
-                        ++target_profile.prof[ref_pos * profile_dim + base_idx];
-                        ++ref_pos;
-                        ++qry_pos;
-                    }
-                    break;
-                }
-                case 'D':
-                case 'N': {
-                    // D/N 只消耗参考：该列没有 query 碱基贡献，仅推进参考坐标。
-                    ref_pos += static_cast<std::size_t>(len);
-                    if (ref_pos > profile_len) {
-                        return false;
-                    }
-                    break;
-                }
-                case 'I':
-                case 'S': {
-                    // I/S 只消耗 query：不对应参考列，不能写入 profile，直接推进 query 坐标。
-                    qry_pos += static_cast<std::size_t>(len);
-                    if (qry_pos > query_seq.size()) {
-                        return false;
-                    }
-                    break;
-                }
-                case 'H':
-                case 'P': {
-                    // H/P 不消耗 query 序列字符串内容，也不消耗参考列，保持坐标不变。
-                    break;
-                }
-                default:
-                    return false;
-            }
-        }
+	    std::size_t ref_pos = 0;
+	    std::size_t ref_offset = 0; // 等价于 ref_pos * profile_dim，但用递增避免循环内乘法
+	    std::size_t qry_pos = 0;
 
-        // 与目标 profile 对齐时，参考消耗长度必须精确覆盖 profile 全长，避免越界和错列更新。
-        return ref_pos == profile_len;
-    }
+	    for (const cigar::CigarUnit unit : cigar) {
+	        char op = '\0';
+	        std::uint32_t len = 0;
+	        cigar::intToCigar(unit, op, len);
 
-    void RefAligner::updateProfilesFromChunk(
-        const std::vector<seq_io::SeqRecord>& chunk,
-        const std::vector<cigar::Cigar_t>& cigar_chunk,
-        const std::vector<std::vector<std::string>>& ref_ids_chunk)
-    {
-        if (chunk.size() != cigar_chunk.size() || chunk.size() != ref_ids_chunk.size()) {
-            throw std::runtime_error("updateProfilesFromChunk: chunk/cigar/ref_ids size mismatch");
-        }
+	        const std::size_t block_len = static_cast<std::size_t>(len);
 
-        // 串行更新共享 profile：避免在并行区对同一 profile 加锁，减少锁竞争与缓存抖动。
-        std::vector<std::string> dirty_ref_ids;
-        for (std::size_t i = 0; i < chunk.size(); ++i) {
-            if (cigar_chunk[i].empty()) {
-                continue;
-            }
+	        switch (op) {
+	            case 'M':
+	            case '=':
+	            case 'X': {
+	                // M/=/X 同时消耗参考和 query。
+	                // 原来是在每个碱基里检查 ref_pos/qry_pos 是否越界；
+	                // 这里改成每个 CIGAR block 只检查一次。
+	                if (ref_pos > profile_len ||
+	                    qry_pos > query_len ||
+	                    block_len > profile_len - ref_pos ||
+	                    block_len > query_len - qry_pos) {
+	                    return false;
+	                }
 
-            if (ref_ids_chunk[i].empty()) {
-                // 空 id 表示最终参考为共识序列，更新 consensus_profile。
-                if (applyCigarToProfile(chunk[i].seq, cigar_chunk[i], consensus_profile)) {
-                    ++consensus_profile.depth;
-                } else {
-#ifdef _DEBUG
-                    spdlog::debug("updateProfilesFromChunk: skip invalid consensus cigar for query={} at i={}",
-                                  chunk[i].id, i);
-#endif
-                }
-                continue;
-            }
+	                for (std::size_t k = 0; k < block_len; ++k) {
+	                    const std::size_t base_idx = static_cast<std::size_t>(
+	                        align::ScoreChar2Idx[query_data[qry_pos]]);
 
-            for (const std::string& ref_id : ref_ids_chunk[i]) {
-                auto profile_it = ref_profile.find(ref_id);
-                if (profile_it == ref_profile.end()) {
-#ifdef _DEBUG
-                    spdlog::debug("updateProfilesFromChunk: skip invalid ref_id={} at i={}",
-                                  ref_id, i);
-#endif
-                    continue;
-                }
+	                    ++prof_data[ref_offset + base_idx];
 
-                if (applyCigarToProfile(chunk[i].seq, cigar_chunk[i], profile_it->second)) {
-                    // depth 表示该 profile 内累计纳入的序列数；不同 profile 合并时会再做等权归一化。
-                    ++profile_it->second.depth;
-                    dirty_ref_ids.push_back(ref_id);
-                } else {
-#ifdef _DEBUG
-                    spdlog::debug("updateProfilesFromChunk: skip invalid cigar for query={} ref_id={} at i={}",
-                                  chunk[i].id, ref_id, i);
-#endif
-                }
-            }
-        }
-        refreshNormalizedReferenceProfiles(dirty_ref_ids);
-    }
+	                    ref_offset += profile_dim;
+	                    ++ref_pos;
+	                    ++qry_pos;
+	                }
 
+	                break;
+	            }
+
+	            case 'D':
+	            case 'N': {
+	                // D/N 只消耗参考：该列没有 query 碱基贡献，仅推进参考坐标。
+	                if (ref_pos > profile_len ||
+	                    block_len > profile_len - ref_pos) {
+	                    return false;
+	                }
+
+	                ref_pos += block_len;
+	                ref_offset += block_len * profile_dim;
+
+	                break;
+	            }
+
+	            case 'I':
+	            case 'S': {
+	                // I/S 只消耗 query：不对应参考列，不能写入 profile，直接推进 query 坐标。
+	                if (qry_pos > query_len ||
+	                    block_len > query_len - qry_pos) {
+	                    return false;
+	                }
+
+	                qry_pos += block_len;
+
+	                break;
+	            }
+
+	            case 'H':
+	            case 'P': {
+	                // H/P 不消耗 query 序列字符串内容，也不消耗参考列，保持坐标不变。
+	                break;
+	            }
+
+	            default:
+	                return false;
+	        }
+	    }
+
+	    // 与目标 profile 对齐时，参考消耗长度必须精确覆盖 profile 全长，避免越界和错列更新。
+	    return ref_pos == profile_len;
+	}
+
+	void RefAligner::updateProfilesFromChunk(
+	    const std::vector<seq_io::SeqRecord>& chunk,
+	    const std::vector<cigar::Cigar_t>& cigar_chunk,
+	    const std::vector<std::vector<std::string>>& ref_ids_chunk)
+	{
+
+	    std::size_t empty_cigar_count = 0;
+	    std::size_t invalid_cigar_count = 0;
+	    std::size_t consensus_update_count = 0;
+	    std::size_t consensus_skip_count = 0;
+	    std::size_t ref_not_found_count = 0;
+	    std::size_t ref_update_count = 0;
+	    std::size_t unique_dirty_ref_count = 0;
+	    std::size_t total_ref_edges = 0;
+
+	    {
+	        if (chunk.size() != cigar_chunk.size() || chunk.size() != ref_ids_chunk.size()) {
+
+	            throw std::runtime_error("updateProfilesFromChunk: chunk/cigar/ref_ids size mismatch");
+	        }
+	    }
+
+	    std::size_t ref_profile_len = 0;
+	    std::size_t ref_profile_dim = 0;
+	    std::size_t consensus_profile_len = 0;
+	    std::size_t consensus_profile_dim = 0;
+
+	    {
+
+
+	        if (!ref_profile.empty()) {
+	            const ProfileMatrix& first_ref_profile = ref_profile.begin()->second;
+
+	            if (first_ref_profile.len < 0 || first_ref_profile.dim <= 0) {
+	                throw std::runtime_error("updateProfilesFromChunk: invalid reference profile shape");
+	            }
+
+	            ref_profile_len = static_cast<std::size_t>(first_ref_profile.len);
+	            ref_profile_dim = static_cast<std::size_t>(first_ref_profile.dim);
+	        }
+
+	        if (consensus_profile.len >= 0 && consensus_profile.dim > 0) {
+	            consensus_profile_len = static_cast<std::size_t>(consensus_profile.len);
+	            consensus_profile_dim = static_cast<std::size_t>(consensus_profile.dim);
+	        }
+
+	    }
+
+	    struct QueryUpdateOffsets {
+	        bool valid = false;
+	        bool consensus_target = false;
+	        std::vector<std::size_t> offsets;
+	    };
+
+	    auto build_update_offsets = [](
+	        const std::string& query_seq,
+	        const cigar::Cigar_t& cigar,
+	        std::size_t profile_len,
+	        std::size_t profile_dim,
+	        std::vector<std::size_t>& offsets) -> bool
+	    {
+	        if (profile_dim == 0) {
+	            return false;
+	        }
+
+	        offsets.clear();
+	        offsets.reserve(std::min(query_seq.size(), profile_len));
+
+	        const std::size_t query_len = query_seq.size();
+	        const unsigned char* query_data =
+	            reinterpret_cast<const unsigned char*>(query_seq.data());
+
+	        std::size_t ref_pos = 0;
+	        std::size_t ref_offset = 0;
+	        std::size_t qry_pos = 0;
+
+	        for (const cigar::CigarUnit unit : cigar) {
+	            char op = '\0';
+	            std::uint32_t len = 0;
+	            cigar::intToCigar(unit, op, len);
+
+	            const std::size_t block_len = static_cast<std::size_t>(len);
+
+	            switch (op) {
+	                case 'M':
+	                case '=':
+	                case 'X': {
+	                    if (ref_pos > profile_len ||
+	                        qry_pos > query_len ||
+	                        block_len > profile_len - ref_pos ||
+	                        block_len > query_len - qry_pos) {
+	                        return false;
+	                    }
+
+	                    for (std::size_t k = 0; k < block_len; ++k) {
+	                        const std::size_t base_idx = static_cast<std::size_t>(
+	                            align::ScoreChar2Idx[query_data[qry_pos]]);
+
+	                        offsets.push_back(ref_offset + base_idx);
+
+	                        ref_offset += profile_dim;
+	                        ++ref_pos;
+	                        ++qry_pos;
+	                    }
+
+	                    break;
+	                }
+
+	                case 'D':
+	                case 'N': {
+	                    if (ref_pos > profile_len ||
+	                        block_len > profile_len - ref_pos) {
+	                        return false;
+	                    }
+
+	                    ref_pos += block_len;
+	                    ref_offset += block_len * profile_dim;
+
+	                    break;
+	                }
+
+	                case 'I':
+	                case 'S': {
+	                    if (qry_pos > query_len ||
+	                        block_len > query_len - qry_pos) {
+	                        return false;
+	                    }
+
+	                    qry_pos += block_len;
+
+	                    break;
+	                }
+
+	                case 'H':
+	                case 'P': {
+	                    break;
+	                }
+
+	                default:
+	                    return false;
+	            }
+	        }
+
+	        return ref_pos == profile_len;
+	    };
+
+	    auto apply_offsets_to_profile = [](
+	        const std::vector<std::size_t>& offsets,
+	        ProfileMatrix& profile)
+	    {
+	        std::uint32_t* prof_data = profile.prof.data();
+
+	        for (const std::size_t offset : offsets) {
+	            ++prof_data[offset];
+	        }
+	    };
+
+	    std::vector<QueryUpdateOffsets> query_offsets(chunk.size());
+
+	    {
+
+	        const int update_threads = std::max(1, threads > 0 ? threads : omp_get_max_threads());
+
+	#pragma omp parallel for default(none) schedule(static) num_threads(update_threads) \
+	    shared(chunk, cigar_chunk, ref_ids_chunk, query_offsets, build_update_offsets) \
+	    firstprivate(ref_profile_len, ref_profile_dim, consensus_profile_len, consensus_profile_dim)
+	        for (std::int64_t si = 0; si < static_cast<std::int64_t>(chunk.size()); ++si) {
+	            const std::size_t i = static_cast<std::size_t>(si);
+
+	            if (cigar_chunk[i].empty()) {
+	                continue;
+	            }
+
+	            QueryUpdateOffsets& qoff = query_offsets[i];
+
+	            if (ref_ids_chunk[i].empty()) {
+	                qoff.consensus_target = true;
+	                qoff.valid = build_update_offsets(
+	                    chunk[i].seq,
+	                    cigar_chunk[i],
+	                    consensus_profile_len,
+	                    consensus_profile_dim,
+	                    qoff.offsets);
+	            } else {
+	                qoff.consensus_target = false;
+	                qoff.valid = build_update_offsets(
+	                    chunk[i].seq,
+	                    cigar_chunk[i],
+	                    ref_profile_len,
+	                    ref_profile_dim,
+	                    qoff.offsets);
+	            }
+	        }
+
+	        for (std::size_t i = 0; i < chunk.size(); ++i) {
+	            if (cigar_chunk[i].empty()) {
+	                ++empty_cigar_count;
+	            } else if (!query_offsets[i].valid) {
+	                ++invalid_cigar_count;
+	            }
+	        }
+
+	    }
+
+	    struct RefUpdateGroup {
+	        std::string ref_id;
+	        ProfileMatrix* profile = nullptr;
+	        std::vector<std::size_t> query_indices;
+	    };
+
+	    std::vector<RefUpdateGroup> ref_groups;
+	    std::unordered_map<std::string, std::size_t> ref_group_index;
+	    std::vector<std::size_t> consensus_query_indices;
+
+	    {
+
+	        ref_groups.reserve(ref_profile.size());
+	        ref_group_index.reserve(ref_profile.size());
+	        consensus_query_indices.reserve(chunk.size());
+
+	        for (std::size_t i = 0; i < chunk.size(); ++i) {
+	            if (cigar_chunk[i].empty() || !query_offsets[i].valid) {
+	                continue;
+	            }
+
+	            if (ref_ids_chunk[i].empty()) {
+	                consensus_query_indices.push_back(i);
+	                continue;
+	            }
+
+	            for (const std::string& ref_id : ref_ids_chunk[i]) {
+	                ++total_ref_edges;
+
+	                auto group_it = ref_group_index.find(ref_id);
+	                if (group_it == ref_group_index.end()) {
+	                    auto profile_it = ref_profile.find(ref_id);
+	                    if (profile_it == ref_profile.end()) {
+	                        ++ref_not_found_count;
+
+	#ifdef _DEBUG
+	                        spdlog::debug("updateProfilesFromChunk: skip invalid ref_id={} at i={}",
+	                                      ref_id, i);
+	#endif
+	                        continue;
+	                    }
+
+	                    const std::size_t group_index = ref_groups.size();
+
+	                    ref_group_index.emplace(ref_id, group_index);
+
+	                    RefUpdateGroup group;
+	                    group.ref_id = ref_id;
+	                    group.profile = &profile_it->second;
+	                    group.query_indices.reserve(64);
+	                    group.query_indices.push_back(i);
+
+	                    ref_groups.push_back(std::move(group));
+	                } else {
+	                    ref_groups[group_it->second].query_indices.push_back(i);
+	                }
+	            }
+	        }
+
+	        unique_dirty_ref_count = ref_groups.size();
+	    }
+
+	    {
+	        for (const std::size_t query_index : consensus_query_indices) {
+	            if (consensus_profile.len < 0 ||
+	                consensus_profile.dim <= 0 ||
+	                consensus_profile.prof.size() !=
+	                    static_cast<std::size_t>(consensus_profile.len) *
+	                    static_cast<std::size_t>(consensus_profile.dim)) {
+	                ++consensus_skip_count;
+	                continue;
+	            }
+
+	            apply_offsets_to_profile(query_offsets[query_index].offsets, consensus_profile);
+	            ++consensus_profile.depth;
+	            ++consensus_update_count;
+	        }
+	    }
+
+		    {
+    		const int update_threads = std::max(1, threads > 0 ? threads : omp_get_max_threads());
+
+	#pragma omp parallel for default(none) schedule(dynamic, 1) num_threads(update_threads) \
+	shared(ref_groups, query_offsets, apply_offsets_to_profile) \
+	firstprivate(ref_profile_len, ref_profile_dim) \
+	reduction(+:ref_update_count)
+    		for (std::int64_t gi = 0; gi < static_cast<std::int64_t>(ref_groups.size()); ++gi) {
+    			RefUpdateGroup& group = ref_groups[static_cast<std::size_t>(gi)];
+    			ProfileMatrix& profile = *group.profile;
+
+    			if (profile.len < 0 ||
+					profile.dim <= 0 ||
+					static_cast<std::size_t>(profile.len) != ref_profile_len ||
+					static_cast<std::size_t>(profile.dim) != ref_profile_dim ||
+					profile.prof.size() != ref_profile_len * ref_profile_dim) {
+    				continue;
+					}
+
+    			for (const std::size_t query_index : group.query_indices) {
+    				apply_offsets_to_profile(query_offsets[query_index].offsets, profile);
+    			}
+
+    			profile.depth += static_cast<int>(group.query_indices.size());
+    			ref_update_count += group.query_indices.size();
+    		}
+		    }
+
+	    std::vector<std::string> dirty_ref_ids;
+	    dirty_ref_ids.reserve(ref_groups.size());
+	    for (const RefUpdateGroup& group : ref_groups) {
+	        dirty_ref_ids.push_back(group.ref_id);
+	    }
+
+	    {
+	        refreshNormalizedReferenceProfiles(dirty_ref_ids);
+	    }
+
+	}
     // 批量比对 query 序列 - 并行处理，每线程独立输出
     void RefAligner::alignSeq2Seq(const FilePath& qry_fasta_path, std::size_t batch_size)
     {
