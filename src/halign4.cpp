@@ -122,6 +122,9 @@ static void checkOption(Options& opt) {
     if (opt.consensus_num <= 0) throw std::runtime_error("consensus-num must be > 0");
     if (opt.gap_open < 0 || opt.gap_open > 127) throw std::runtime_error("gap_open must be in [0, 127]");
     if (opt.gap_extend < 0 || opt.gap_extend > 127) throw std::runtime_error("gap_extend must be in [0, 127]");
+    if (opt.band_width < -1 && opt.band_width != AUTO_BAND_WIDTH) {
+        throw std::runtime_error("band must be -1 (disabled), auto, or >= 0");
+    }
     if (opt.min_profile_references <= 0) throw std::runtime_error("min-profile-references must be > 0");
     if (opt.max_profile_references < opt.min_profile_references) {
         throw std::runtime_error("max-profile-references must be >= min-profile-references");

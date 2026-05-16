@@ -26,6 +26,7 @@ namespace align {
                            std::array<int8_t, 25> score_matrix_in,
                            int gap_open,
                            int gap_extend,
+                           int band_width,
                            int min_profile_references,
                            int max_profile_references,
                            double min_profile_reference_similarity,
@@ -42,6 +43,7 @@ namespace align {
           score_matrix(score_matrix_in),
           gap_open(gap_open),
           gap_extend(gap_extend),
+          band_width(band_width),
           min_profile_references(min_profile_references),
           max_profile_references(max_profile_references),
           min_profile_reference_similarity(min_profile_reference_similarity),
@@ -178,6 +180,7 @@ namespace align {
             opt.score_matrix,
             opt.gap_open,
             opt.gap_extend,
+            opt.band_width,
             opt.min_profile_references,
             opt.max_profile_references,
             opt.min_profile_reference_similarity,
@@ -351,6 +354,7 @@ namespace align {
         cfg.mat = score_matrix.data();
         cfg.gap_open = gap_open;
         cfg.gap_extend = gap_extend;
+        cfg.band_width = band_width;
         return cfg;
     }
 

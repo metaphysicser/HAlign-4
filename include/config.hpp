@@ -50,6 +50,7 @@ const std::string MAFFT_MSA_CMD = "mafft --thread {thread} --auto {input} > {out
 const std::string CLUSTALO_MSA_CMD = "clustalo -i {input} -o {output} --threads {thread}"; // Clustal Omega 多序列比对命令模板示例
 
 const std::string DEFAULT_MSA_CMD = MAFFT_MSA_CMD; // 默认多序列比对命令模板
+inline constexpr int AUTO_BAND_WIDTH = -2; // --band 的内部默认值：自动估计；-1 表示禁用 band
 
 enum class InsertionMergeMode {
     reference_guided,
@@ -234,6 +235,7 @@ struct Options {
     std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX;
     int gap_open = 10;          // --gap-open：gap open 罚分
     int gap_extend = 2;         // --gap-extend：gap extend 罚分
+    int band_width = AUTO_BAND_WIDTH; // --band：双序列/profile 比对带宽；AUTO_BAND_WIDTH 自动估计，-1 禁用
     int min_profile_references = 15;   // --min-profile-references：每条 query 至少使用的参考 profile 数
     int max_profile_references = 40;   // --max-profile-references：最多使用的参考 profile 数
     double min_profile_reference_similarity = 0.7; // --min-profile-reference-similarity：Mash ANI 序列相似度阈值
@@ -417,6 +419,12 @@ static void setupCli(CLI::App& app, Options& opt) {
         ->check(CLI::Range(0, 127))
         ->group("Detailed options");
 
+    app.add_option("--band", opt.band_width,
+                   "Band width used by pairwise/profile reference alignment (-1 disables band; default: auto).")
+        ->default_str("auto")
+        ->check(CLI::Range(-1, 100000000))
+        ->group("Detailed options");
+
     app.add_option("--min-profile-references", opt.min_profile_references,
                    "Minimum number of mash-ranked reference profiles to combine.")
         ->default_val(15)
@@ -510,6 +518,7 @@ static void logParsedOptions(const Options& opt) {
         {"score-matrix", toString(opt.score_matrix_path, valW)},
         {"gap-open", std::to_string(opt.gap_open)},
         {"gap-extend", std::to_string(opt.gap_extend)},
+        {"band", opt.band_width == AUTO_BAND_WIDTH ? std::string("auto") : std::to_string(opt.band_width)},
         {"min-profile-references", std::to_string(opt.min_profile_references)},
         {"max-profile-references", std::to_string(opt.max_profile_references)},
         {"min-profile-reference-similarity", std::to_string(opt.min_profile_reference_similarity)},

@@ -117,7 +117,7 @@ namespace align {
         int gap_extend = 2;                 // gap extend 罚分
         int end_bonus = 0;                  // 末端奖励
         int zdrop = -1;                     // -1 表示默认/不启用
-        int band_width = -1;                // -1 表示不限制带宽
+        int band_width = AUTO_BAND_WIDTH;   // AUTO_BAND_WIDTH 自动估计；-1 表示不限制带宽
         int flag = KSW_EZ_RIGHT;
     };
 
@@ -192,6 +192,7 @@ namespace align {
                    std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX,
                    int gap_open = 10,
                    int gap_extend = 2,
+                   int band_width = AUTO_BAND_WIDTH,
                    int min_profile_references = 15,
                    int max_profile_references = 40,
                    double min_profile_reference_similarity = 0.7,
@@ -313,6 +314,7 @@ namespace align {
         std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX;
         int gap_open = 10;
         int gap_extend = 2;
+        int band_width = AUTO_BAND_WIDTH;
         int min_profile_references = 15;
         int max_profile_references = 40;
         double min_profile_reference_similarity = 0.7;

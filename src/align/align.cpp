@@ -339,6 +339,14 @@ namespace align
         return margin + static_cast<int>(indel_rate * (qlen + tlen / 2));
     }
 
+    static int resolve_band_width(int configured_band_width, int ref_len, int query_len)
+    {
+        if (configured_band_width == AUTO_BAND_WIDTH) {
+            return align::auto_band(ref_len, query_len);
+        }
+        return configured_band_width;
+    }
+
     // KSW2 全局比对（end-to-end）- 编码序列并调用 KSW2
     cigar::Cigar_t globalAlignKSW2(const std::string& ref, const std::string& query)
     {
@@ -369,8 +377,10 @@ namespace align
         for (size_t i = 0; i < query.size(); ++i)
             qry_enc[i] = align::ScoreChar2Idx[static_cast<uint8_t>(query[i])];
 
-        cfg.band_width = align::auto_band(ref.size(), query.size());
-        //cfg.band_width = -1;
+        cfg.band_width = resolve_band_width(
+            cfg.band_width,
+            static_cast<int>(ref.size()),
+            static_cast<int>(query.size()));
 
         // 改为调用 ksw_gg2_sse：该接口是标准全局比对（Needleman-Wunsch），
         // 直接返回完整路径 CIGAR，不再依赖 extz 的 zdrop/end_bonus/flag 行为。
@@ -550,8 +560,10 @@ namespace align
         for (size_t i = 0; i < query.size(); ++i)
             qry_enc[i] = align::ScoreChar2Idx[static_cast<uint8_t>(query[i])];
 
-        cfg.band_width = align::auto_band(ref.len, query.size());
-        //cfg.band_width = -1;
+        cfg.band_width = resolve_band_width(
+            cfg.band_width,
+            ref.len,
+            static_cast<int>(query.size()));
 
         int m_cigar = 0, n_cigar = 0;
         uint32_t* cigar1 = 0;
