@@ -180,6 +180,7 @@ namespace seq_io
         table[static_cast<unsigned char>('U')] = 'U';
         table[static_cast<unsigned char>('u')] = 'U';
         table[static_cast<unsigned char>('-')] = '-';
+    	table[static_cast<unsigned char>('.')] = '-';
 
         return table;
     }

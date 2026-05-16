@@ -90,14 +90,33 @@ K-mer size used when building mash sketches for profile reference search.
 Provide an explicit center/reference sequence file (FASTA).
 
 - If provided, the program will use these sequences as the reference/center set instead of auto-selecting.
+- By default this file is treated as an ungapped reference FASTA.
 - Validation: must exist (`CLI::ExistingFile`)
+
+#### `-a, --reference-aligned`
+Treat `-r/--reference` as a **pre-aligned reference MSA**.
+
+- The program strips `-`/`.` gap columns from each reference record internally and uses that generated FASTA as the reference sequence set.
+- The original aligned file is reused as the reference MSA, so HAlign-4 does not need a separate `--reference-msa` path.
+- Validation: `-r/--reference` must be provided, and all records in that file must have the same aligned length.
+
+Example:
+
+```bash
+./build/halign4 \
+  -i test/data/covid-test.fasta.gz \
+  -o covid.out.fasta \
+  -w covid.work \
+  -r test/data/covid-ref.aligned.fasta \
+  -a
+```
 
 #### `--reference-msa <path>`
-Provide the **pre-aligned MSA** corresponding to `-r/--reference`.
+Provide a **pre-aligned reference MSA**.
 
-- This option is useful when your reference set has already been aligned and you do **not** want HAlign-4 to run the external MSA step again.
+- Compatibility use: provide an ungapped `-r/--reference` and the corresponding aligned MSA with `--reference-msa`.
+- Convenience use: omit `-r`; HAlign-4 will strip gaps from `--reference-msa` internally to build the reference FASTA.
 - Validation: must exist (`CLI::ExistingFile`)
-- Relationship: this flag is intended to be used together with `-r/--reference`.
 
 Example:
 
@@ -107,6 +126,16 @@ Example:
   -o covid.out.fasta \
   -w covid.work \
   -r test/data/covid-ref.fasta.gz \
+  --reference-msa test/data/covid-ref.aligned.fasta
+```
+
+Equivalent convenience form:
+
+```bash
+./build/halign4 \
+  -i test/data/covid-test.fasta.gz \
+  -o covid.out.fasta \
+  -w covid.work \
   --reference-msa test/data/covid-ref.aligned.fasta
 ```
 
@@ -217,6 +246,7 @@ Keep reference sequences in `-r/--reference` ungapped in the final MSA.
 
 - Source-level meaning (matches `RefAligner` implementation):
   - When set, the pipeline removes alignment columns that would introduce gaps into the reference sequences.
+- If the reference is supplied as an aligned MSA via `-r -a` or `--reference-msa`, this applies to the internally generated gap-stripped reference FASTA.
 - When `-r/--reference` contains multiple reference sequences:
   - **all** reference sequences are guaranteed to have no inserted gaps.
 

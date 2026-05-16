@@ -11,8 +11,82 @@
 #include <cstdlib>
 #include <fstream>
 #include <memory>
+#include <optional>
 
 // 程序入口：命令行解析 -> 预处理 -> 共识对齐 -> 序列比对 -> 结果合并 -> 清理工作目录
+
+static FilePath generatedUngappedReferencePath(const Options& opt) {
+    return FilePath(opt.workdir) / WORKDIR_DATA / DATA_CLEAN / "reference_ungapped.fasta";
+}
+
+static void writeUngappedReferenceFasta(const FilePath& aligned_fasta,
+                                        const FilePath& ungapped_fasta,
+                                        const std::string& source_label) {
+    file_io::ensureParentDirExists(ungapped_fasta);
+
+    seq_io::KseqReader reader(aligned_fasta);
+    seq_io::SeqWriter writer(ungapped_fasta);
+    seq_io::SeqRecord rec;
+    std::optional<std::size_t> expected_aligned_len;
+    std::size_t sequence_count = 0;
+
+    while (reader.next(rec)) {
+        ++sequence_count;
+
+        if (!expected_aligned_len.has_value()) {
+            expected_aligned_len = rec.seq.size();
+        } else if (rec.seq.size() != expected_aligned_len.value()) {
+            throw std::runtime_error(source_label + " is not aligned: sequence '" + rec.id +
+                                     "' has length " + std::to_string(rec.seq.size()) +
+                                     ", expected " + std::to_string(expected_aligned_len.value()));
+        }
+
+        seq_io::cleanSequence(rec.seq);
+
+        std::string ungapped;
+        ungapped.reserve(rec.seq.size());
+        for (char ch : rec.seq) {
+            if (ch != '-') {
+                ungapped.push_back(ch);
+            }
+        }
+        if (ungapped.empty()) {
+            throw std::runtime_error(source_label + " contains an empty reference after removing gaps for ID '" +
+                                     rec.id + "'");
+        }
+
+        rec.seq = std::move(ungapped);
+        writer.write(rec);
+    }
+
+    writer.flush();
+
+    if (sequence_count == 0) {
+        throw std::runtime_error(source_label + " contains no FASTA records");
+    }
+
+    spdlog::info("Generated ungapped reference FASTA from {}: {} -> {} ({} sequences)",
+                 source_label, aligned_fasta.string(), ungapped_fasta.string(), sequence_count);
+}
+
+static void normalizeAlignedReferenceOptions(Options& opt) {
+    if (opt.reference_is_aligned) {
+        const FilePath aligned_reference = FilePath(opt.reference_path);
+        const FilePath ungapped_reference = generatedUngappedReferencePath(opt);
+        writeUngappedReferenceFasta(aligned_reference, ungapped_reference,
+                                    "-r/--reference with -a/--reference-aligned");
+        opt.reference_path = ungapped_reference.string();
+        opt.reference_msa_path = aligned_reference.string();
+        return;
+    }
+
+    if (opt.reference_path.empty() && !opt.reference_msa_path.empty()) {
+        const FilePath aligned_reference = FilePath(opt.reference_msa_path);
+        const FilePath ungapped_reference = generatedUngappedReferencePath(opt);
+        writeUngappedReferenceFasta(aligned_reference, ungapped_reference, "--reference-msa");
+        opt.reference_path = ungapped_reference.string();
+    }
+}
 
 // 参数校验与工作目录准备
 static void checkOption(Options& opt) {
@@ -23,10 +97,16 @@ static void checkOption(Options& opt) {
     }
     if (!opt.reference_msa_path.empty()) {
         file_io::requireRegularFile(opt.reference_msa_path, "reference_msa_path");
-        if (opt.reference_path.empty()) {
-            throw std::runtime_error("--reference-msa requires -r/--reference to be provided as the matching reference FASTA");
-        }
-        // 验证 -r/--reference 和 --reference-msa 的序列一致性（删除 gap 后）
+    }
+    if (opt.reference_is_aligned && opt.reference_path.empty()) {
+        throw std::runtime_error("-a/--reference-aligned requires -r/--reference");
+    }
+    if (opt.reference_is_aligned && !opt.reference_msa_path.empty()) {
+        throw std::runtime_error("-a/--reference-aligned cannot be used together with --reference-msa; "
+                                 "use either '-r <aligned.fa> -a' or '-r <ungapped.fa> --reference-msa <aligned.fa>'");
+    }
+    if (!opt.reference_is_aligned && !opt.reference_path.empty() && !opt.reference_msa_path.empty()) {
+        // 兼容旧用法：验证 -r/--reference 和 --reference-msa 的序列一致性（删除 gap 后）
         validateRefAlignedConsistency(FilePath(opt.reference_path), FilePath(opt.reference_msa_path));
     }
     if (!opt.score_matrix_path.empty()) {
@@ -72,6 +152,8 @@ static void checkOption(Options& opt) {
     constexpr bool must_be_empty = true;
 #endif
     file_io::prepareEmptydir(opt.workdir, must_be_empty);
+
+    normalizeAlignedReferenceOptions(opt);
 
     // MSA 命令模板解析与自检
     const std::string msa_tool_template = resolveMsaToolTemplate(opt.msa_tool);

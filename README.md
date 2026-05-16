@@ -56,7 +56,8 @@ The most important parameters are:
 - `-w/--workdir`: working directory (optional; default: `./tmp-<random>`)
 - `--msa-tool`: MSA method (keyword: `minipoa`/`mafft`/`clustalo`, or a custom template)
 - `-r/--reference`: provide a reference/center FASTA (optional)
-- `--reference-msa`: provide the pre-aligned MSA for the `-r/--reference` reference set
+- `-a/--reference-aligned`: treat `-r/--reference` as a pre-aligned reference MSA and strip gaps internally
+- `--reference-msa`: compatibility option for a pre-aligned reference MSA; can also be used without `-r`
 - `--score-matrix`: provide a DNA5 scoring matrix file (see `score.example.tsv`)
 - `--minimizer-size`, `--minimizer-window`, `--consensus-num`, `--sketch-size`, `--sketch-kmer-size`, `--batch-size`: algorithm sizing controls
 - `--gap-open`, `--gap-extend`: control gap open/extension penalties

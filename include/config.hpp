@@ -49,7 +49,7 @@ const std::string MINIPOA_CMD = "minipoa {input} -S -t {thread} -r1 > {output}";
 const std::string MAFFT_MSA_CMD = "mafft --thread {thread} --auto {input} > {output}"; // MAFFT 多序列比对命令模板示例
 const std::string CLUSTALO_MSA_CMD = "clustalo -i {input} -o {output} --threads {thread}"; // Clustal Omega 多序列比对命令模板示例
 
-const std::string DEFAULT_MSA_CMD = MINIPOA_CMD; // 默认多序列比对命令模板
+const std::string DEFAULT_MSA_CMD = MAFFT_MSA_CMD; // 默认多序列比对命令模板
 
 enum class InsertionMergeMode {
     reference_guided,
@@ -213,7 +213,8 @@ struct Options {
 
 	// 可选参数：参考序列、MSA 命令模板
     std::string reference_path;       // -r/--reference：可选，指定参考/中心序列文件路径，若指定则绕过自动选择
-    std::string reference_msa_path; // --reference-msa：与 -r/--reference 对应的“已比对 MSA”文件路径
+    std::string reference_msa_path; // --reference-msa：预对齐参考 MSA；兼容旧用法，也可单独提供
+    bool reference_is_aligned = false; // -a/--reference-aligned：将 -r/--reference 视为已比对 MSA，并自动去 gap 生成参考序列
 	std::string msa_tool;        // --msa-tool：用于对共识序列做 MSA 的命令模板（可以包含 {input} {output} {thread} 占位符）
 
 	// 并行与算法参数
@@ -298,19 +299,23 @@ static void setupCli(CLI::App& app, Options& opt) {
     // 可选参数（增加长参数形式）
     // 说明：
     // - 不提供时：程序会在预处理阶段自动选择并生成共识/中心序列；
-    // - 提供时：会使用该序列作为参考（并在 workdir 中进行统一管理）。
+    // - 提供时：默认会使用该 FASTA 作为未对齐参考；
+    // - 与 -a/--reference-aligned 同时提供时，该 FASTA 会被视为已对齐 MSA，并自动去 gap 生成未对齐参考。
     // 典型用途：COVID 数据集里可以用 covid-ref 的第一条（武汉参考）作为 center。
     app.add_option("-r,--reference", opt.reference_path,
-                   "Center/reference sequence in FASTA (optional). If not set, a consensus/center is generated.")
+                   "Center/reference FASTA. With -a, treat this file as an aligned reference MSA and strip gaps internally.")
         ->check(CLI::ExistingFile);
 
-    // --reference-msa：与 -r/--reference 配套的“已对齐 MSA”文件。
+    app.add_flag("-a,--reference-aligned,--aligned-reference", opt.reference_is_aligned,
+                   "Treat -r/--reference as a pre-aligned reference MSA; gaps are stripped internally.");
+
+    // --reference-msa：预对齐 MSA 文件。
     // 设计目标：
-    // - 当用户已经为 -r 准备好了比对结果时，可以直接复用该 MSA，避免再次运行 MSA 工具；
-    // - 仍然保留 -r/--reference 作为“参考/中心序列 FASTA”的入口，保持旧行为不变；
+    // - 兼容旧用法：-r 提供未对齐参考，--reference-msa 提供对应 MSA；
+    // - 新用法：也允许只提供 --reference-msa，程序会自动去 gap 生成未对齐参考；
     // - 该参数不是可执行文件，也不是普通的“可选字符串”，因此直接按存在文件路径校验。
     app.add_option("--reference-msa", opt.reference_msa_path,
-                   "Pre-aligned MSA file for the reference set provided by -r/--reference.")
+                   "Pre-aligned reference MSA. If -r is omitted, gaps are stripped internally to build the reference FASTA.")
         ->check(CLI::ExistingFile)
 		->group("Detailed options");;
 
@@ -493,6 +498,7 @@ static void logParsedOptions(const Options& opt) {
         {"workdir", toString(opt.workdir, valW)},
         {"reference", toString(opt.reference_path, valW)},
         {"reference-msa", toString(opt.reference_msa_path, valW)},
+        {"reference-aligned", boolToStr(opt.reference_is_aligned)},
         {"msa-tool", toString(opt.msa_tool, valW)},
         {"threads", std::to_string(opt.threads)},
         {"minimizer-size", std::to_string(opt.minimizer_size)},

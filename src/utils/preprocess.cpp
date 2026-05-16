@@ -287,7 +287,7 @@ void validateRefAlignedConsistency(const FilePath& ref_fasta, const FilePath& re
             for (std::size_t i = 0; i < rec.seq.size(); ++i) {
                 char c = rec.seq[i];
 
-                if (c == '-') {
+                if (c == '-' || c == '.') {
                     std::ostringstream oss;
                     oss << "Gap character found in -r/--reference for ID '" << rec.id
                         << "' at position " << (i + 1)
@@ -361,7 +361,7 @@ void validateRefAlignedConsistency(const FilePath& ref_fasta, const FilePath& re
             for (std::size_t i = 0; i < rec.seq.size(); ++i) {
                 char c = rec.seq[i];
 
-                if (c == '-') {
+                if (c == '-' || c == '.') {
                     continue;
                 }
 

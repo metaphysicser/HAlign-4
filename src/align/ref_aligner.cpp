@@ -83,12 +83,12 @@ namespace align {
                 ref_sketch.emplace(seq_it->first, std::move(ref_sketches[i]));
             }
         }
-        if (ref_sketch.size() > 1) {
-            const std::size_t removed_common_hashes = mash::removeCommonHashesFromSketches(ref_sketch);
-            if (removed_common_hashes != 0) {
-                spdlog::info("Removed {} hashes shared by all reference sketches", removed_common_hashes);
-            }
-        }
+        // if (ref_sketch.size() > 1) {
+        //     const std::size_t removed_common_hashes = mash::removeCommonHashesFromSketches(ref_sketch);
+        //     if (removed_common_hashes != 0) {
+        //         spdlog::info("Removed {} hashes shared by all reference sketches", removed_common_hashes);
+        //     }
+        // }
         if (ref_sketch.size() > kSketchBitsetRefThreshold) {
             ref_sketch_bitset_index.build(ref_sketch, false);
             spdlog::info("Built reference sketch bitset index: {} refs, {} hash dictionary entries",
