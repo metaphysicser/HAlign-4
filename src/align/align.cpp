@@ -308,22 +308,25 @@ namespace align
             std::reverse(rev_ref.begin(), rev_ref.end());
             std::reverse(rev_query.begin(), rev_query.end());
 
-            cigar::Cigar_t ext = extendAlignKSW2Configured(rev_ref, rev_query, cfg);
-            const std::size_t c_ref = cigar::getRefLength(ext);
-            const std::size_t c_qry = cigar::getQueryLength(ext);
-            if (c_ref > ref.size() || c_qry > query.size() || ext.empty()) {
-                return globalAlignKSW2(ref, query, cfg);
-            }
-
-            const std::size_t prefix_ref_len = ref.size() - c_ref;
-            const std::size_t prefix_qry_len = query.size() - c_qry;
-            cigar::Cigar_t out = globalAlignKSW2(
-                ref.substr(0, prefix_ref_len),
-                query.substr(0, prefix_qry_len),
-                cfg);
-            std::reverse(ext.begin(), ext.end());
-            cigar::appendCigar(out, ext);
-            return out;
+        	cigar::Cigar_t ext = globalAlignKSW2(rev_ref, rev_query, cfg);
+        	std::reverse(ext.begin(), ext.end());
+        	return ext;
+            // cigar::Cigar_t ext = extendAlignKSW2Configured(rev_ref, rev_query, cfg);
+            // const std::size_t c_ref = cigar::getRefLength(ext);
+            // const std::size_t c_qry = cigar::getQueryLength(ext);
+            // if (c_ref > ref.size() || c_qry > query.size() || ext.empty()) {
+            //     return globalAlignKSW2(ref, query, cfg);
+            // }
+            //
+            // const std::size_t prefix_ref_len = ref.size() - c_ref;
+            // const std::size_t prefix_qry_len = query.size() - c_qry;
+            // cigar::Cigar_t out = globalAlignKSW2(
+            //     ref.substr(0, prefix_ref_len),
+            //     query.substr(0, prefix_qry_len),
+            //     cfg);
+            // std::reverse(ext.begin(), ext.end());
+            // cigar::appendCigar(out, ext);
+            // return out;
         }
     } // namespace
 
