@@ -22,6 +22,17 @@ namespace align
 {
     namespace {
 
+        static constexpr std::uint64_t kProfileBaseThresholdNum = 7;
+        static constexpr std::uint64_t kProfileBaseThresholdDen = 10;
+        static constexpr std::uint32_t kMaxCigarOpLen = (1U << 28) - 1U;
+
+        struct MatchBlock
+        {
+            std::size_t ref_start = 0;
+            std::size_t qry_start = 0;
+            std::size_t len = 0;
+        };
+
         char complementBase(char ch)
         {
             switch (ch) {
@@ -33,6 +44,286 @@ namespace align
                 case '-': case '.': return ch;
                 default: return 'N';
             }
+        }
+
+        char canonicalDnaBase(char ch)
+        {
+            switch (ch) {
+                case 'A': case 'a': return 'A';
+                case 'C': case 'c': return 'C';
+                case 'G': case 'g': return 'G';
+                case 'T': case 't':
+                case 'U': case 'u': return 'T';
+                default: return '\0';
+            }
+        }
+
+        bool simpleBasesMatch(char ref_base, char query_base)
+        {
+            const char qry = canonicalDnaBase(query_base);
+            return ref_base != '\0' && qry != '\0' && ref_base == qry;
+        }
+
+        char profileConsensusBaseAt(const ProfileMatrix& profile, std::size_t pos)
+        {
+            if (profile.len < 0 || profile.dim < 5 || profile.depth <= 0 ||
+                pos >= static_cast<std::size_t>(profile.len)) {
+                return '\0';
+            }
+
+            const std::size_t dim = static_cast<std::size_t>(profile.dim);
+            const std::size_t off = pos * dim;
+            if (off + 4 >= profile.prof.size()) {
+                return '\0';
+            }
+
+            static constexpr char bases[4] = {'A', 'C', 'G', 'T'};
+            std::uint32_t best_count = 0;
+            std::size_t best_idx = 0;
+            for (std::size_t idx = 0; idx < 4; ++idx) {
+                const std::uint32_t count = profile.prof[off + idx];
+                if (count > best_count) {
+                    best_count = count;
+                    best_idx = idx;
+                }
+            }
+
+            const std::uint64_t lhs =
+                static_cast<std::uint64_t>(best_count) * kProfileBaseThresholdDen;
+            const std::uint64_t rhs =
+                static_cast<std::uint64_t>(profile.depth) * kProfileBaseThresholdNum;
+            return lhs > rhs ? bases[best_idx] : '\0';
+        }
+
+        void appendCigarOp(cigar::Cigar_t& result, char op, std::size_t len)
+        {
+            while (len > 0) {
+                if (!result.empty()) {
+                    char last_op = '\0';
+                    std::uint32_t last_len = 0;
+                    cigar::intToCigar(result.back(), last_op, last_len);
+                    if (last_op == op && last_len < kMaxCigarOpLen) {
+                        const std::size_t add =
+                            std::min<std::size_t>(len, kMaxCigarOpLen - last_len);
+                        result.back() = cigar::cigarToInt(
+                            op, last_len + static_cast<std::uint32_t>(add));
+                        len -= add;
+                        continue;
+                    }
+                }
+
+                const std::size_t chunk = std::min<std::size_t>(len, kMaxCigarOpLen);
+                result.push_back(cigar::cigarToInt(op, static_cast<std::uint32_t>(chunk)));
+                len -= chunk;
+            }
+        }
+
+        template <typename RefBaseAt>
+        std::vector<MatchBlock> buildExtendedMatchBlocks(const anchor::Anchors& chain_anchors,
+                                                         std::size_t ref_len,
+                                                         std::size_t qry_len,
+                                                         const std::string& query,
+                                                         RefBaseAt ref_base_at)
+        {
+            std::vector<MatchBlock> blocks;
+            blocks.reserve(chain_anchors.size());
+
+            std::size_t prev_ref_end = 0;
+            std::size_t prev_qry_end = 0;
+
+            for (const anchor::Anchor& anchor : chain_anchors) {
+                std::size_t ref_start = std::min<std::size_t>(anchor.pos_ref, ref_len);
+                std::size_t qry_start = std::min<std::size_t>(anchor.pos_qry, qry_len);
+
+                std::size_t shift = 0;
+                if (ref_start < prev_ref_end) {
+                    shift = std::max(shift, prev_ref_end - ref_start);
+                }
+                if (qry_start < prev_qry_end) {
+                    shift = std::max(shift, prev_qry_end - qry_start);
+                }
+
+                if (shift > ref_len - ref_start || shift > qry_len - qry_start) {
+                    continue;
+                }
+                ref_start += shift;
+                qry_start += shift;
+
+                std::size_t max_len = static_cast<std::size_t>(anchor.span);
+                max_len = std::min(max_len, ref_len - ref_start);
+                max_len = std::min(max_len, qry_len - qry_start);
+                if (shift >= static_cast<std::size_t>(anchor.span) || max_len == 0) {
+                    continue;
+                }
+
+                std::size_t len = 0;
+                while (len < max_len &&
+                       simpleBasesMatch(ref_base_at(ref_start + len), query[qry_start + len])) {
+                    ++len;
+                }
+                if (len == 0) {
+                    continue;
+                }
+
+                while (ref_start > prev_ref_end && qry_start > prev_qry_end &&
+                       simpleBasesMatch(ref_base_at(ref_start - 1), query[qry_start - 1])) {
+                    --ref_start;
+                    --qry_start;
+                    ++len;
+                }
+
+                while (ref_start + len < ref_len &&
+                       qry_start + len < qry_len &&
+                       simpleBasesMatch(ref_base_at(ref_start + len), query[qry_start + len])) {
+                    ++len;
+                }
+
+                blocks.push_back(MatchBlock{ref_start, qry_start, len});
+                prev_ref_end = ref_start + len;
+                prev_qry_end = qry_start + len;
+            }
+
+            return blocks;
+        }
+
+        ProfileMatrix sliceProfile(const ProfileMatrix& profile,
+                                   std::size_t ref_start,
+                                   std::size_t ref_end)
+        {
+            if (profile.dim <= 0 || profile.len < 0) {
+                throw std::runtime_error("sliceProfile: invalid profile shape");
+            }
+
+            const std::size_t profile_len = static_cast<std::size_t>(profile.len);
+            ref_start = std::min(ref_start, profile_len);
+            ref_end = std::min(ref_end, profile_len);
+            if (ref_end < ref_start) {
+                ref_end = ref_start;
+            }
+
+            ProfileMatrix seg_ref;
+            const std::size_t seg_ref_len = ref_end - ref_start;
+            seg_ref.len = static_cast<int>(seg_ref_len);
+            seg_ref.dim = profile.dim;
+            seg_ref.depth = profile.depth;
+
+            if (seg_ref_len > 0) {
+                const std::size_t dim = static_cast<std::size_t>(profile.dim);
+                const std::size_t offset = ref_start * dim;
+                const std::size_t count = seg_ref_len * dim;
+                if (offset + count > profile.prof.size()) {
+                    throw std::runtime_error("sliceProfile: profile data is truncated");
+                }
+                seg_ref.prof.assign(
+                    profile.prof.begin() + static_cast<std::ptrdiff_t>(offset),
+                    profile.prof.begin() + static_cast<std::ptrdiff_t>(offset + count));
+            }
+
+            return seg_ref;
+        }
+
+        std::string kswCompatibleReference(std::string ref)
+        {
+            for (char& ch : ref) {
+                if (ProfileMatrix::isGap(ch) || canonicalDnaBase(ch) == '\0') {
+                    ch = 'N';
+                }
+            }
+            return ref;
+        }
+
+        cigar::Cigar_t extendAlignKSW2Configured(const std::string& ref,
+                                                 const std::string& query,
+                                                 align::AlignConfig cfg)
+        {
+            if (ref.empty() || query.empty()) {
+                return globalAlignKSW2(ref, query, cfg);
+            }
+
+            std::vector<std::uint8_t> ref_enc(ref.size());
+            std::vector<std::uint8_t> qry_enc(query.size());
+            for (std::size_t i = 0; i < ref.size(); ++i) {
+                ref_enc[i] = align::ScoreChar2Idx[static_cast<std::uint8_t>(ref[i])];
+            }
+            for (std::size_t i = 0; i < query.size(); ++i) {
+                qry_enc[i] = align::ScoreChar2Idx[static_cast<std::uint8_t>(query[i])];
+            }
+
+            cfg.zdrop = cfg.zdrop >= 0 ? cfg.zdrop : 200;
+            cfg.flag = KSW_EZ_EXTZ_ONLY | KSW_EZ_RIGHT | KSW_EZ_APPROX_DROP;
+            cfg.end_bonus = cfg.end_bonus != 0 ? cfg.end_bonus : 50;
+            if (cfg.band_width == AUTO_BAND_WIDTH) {
+                cfg.band_width = align::auto_band(
+                    static_cast<int>(ref.size()),
+                    static_cast<int>(query.size()));
+            }
+
+            ksw_extz_t ez{};
+            ksw_extz2_sse(nullptr,
+                static_cast<int>(qry_enc.size()), qry_enc.data(),
+                static_cast<int>(ref_enc.size()), ref_enc.data(),
+                cfg.alphabet_size, cfg.mat,
+                cfg.gap_open, cfg.gap_extend,
+                cfg.band_width, cfg.zdrop, cfg.end_bonus,
+                cfg.flag, &ez);
+
+            cigar::Cigar_t out;
+            out.reserve(ez.n_cigar);
+            for (int i = 0; i < ez.n_cigar; ++i) {
+                out.push_back(ez.cigar[i]);
+            }
+
+            free(ez.cigar);
+            return out;
+        }
+
+        cigar::Cigar_t alignTerminalKSW2(const std::string& ref_segment,
+                                         const std::string& query_segment,
+                                         align::AlignConfig cfg,
+                                         bool reverse_from_anchor)
+        {
+            std::string ref = kswCompatibleReference(ref_segment);
+            std::string query = query_segment;
+
+            if (ref.empty() || query.empty()) {
+                return globalAlignKSW2(ref, query, cfg);
+            }
+
+            if (!reverse_from_anchor) {
+                cigar::Cigar_t ext = extendAlignKSW2Configured(ref, query, cfg);
+                const std::size_t c_ref = cigar::getRefLength(ext);
+                const std::size_t c_qry = cigar::getQueryLength(ext);
+                if (c_ref <= ref.size() && c_qry <= query.size() && !ext.empty()) {
+                    if (c_ref < ref.size() || c_qry < query.size()) {
+                        cigar::appendCigar(ext, globalAlignKSW2(
+                            ref.substr(c_ref), query.substr(c_qry), cfg));
+                    }
+                    return ext;
+                }
+                return globalAlignKSW2(ref, query, cfg);
+            }
+
+            std::string rev_ref = ref;
+            std::string rev_query = query;
+            std::reverse(rev_ref.begin(), rev_ref.end());
+            std::reverse(rev_query.begin(), rev_query.end());
+
+            cigar::Cigar_t ext = extendAlignKSW2Configured(rev_ref, rev_query, cfg);
+            const std::size_t c_ref = cigar::getRefLength(ext);
+            const std::size_t c_qry = cigar::getQueryLength(ext);
+            if (c_ref > ref.size() || c_qry > query.size() || ext.empty()) {
+                return globalAlignKSW2(ref, query, cfg);
+            }
+
+            const std::size_t prefix_ref_len = ref.size() - c_ref;
+            const std::size_t prefix_qry_len = query.size() - c_qry;
+            cigar::Cigar_t out = globalAlignKSW2(
+                ref.substr(0, prefix_ref_len),
+                query.substr(0, prefix_qry_len),
+                cfg);
+            std::reverse(ext.begin(), ext.end());
+            cigar::appendCigar(out, ext);
+            return out;
         }
     } // namespace
 
@@ -415,7 +706,7 @@ namespace align
         for (int i = 0; i < ez.n_cigar; ++i)
             cigar.push_back(ez.cigar[i]);
 
-        free(cigar_raw);
+        free(ez.cigar);
         return cigar;
     }
 
@@ -624,8 +915,17 @@ namespace align
                       return a.pos_ref < b.pos_ref;
                   });
 
+        const std::vector<MatchBlock> match_blocks = buildExtendedMatchBlocks(
+            chain_anchors, ref_len, qry_len, query,
+            [&ref](std::size_t pos) {
+                return canonicalDnaBase(ref[pos]);
+            });
+        if (match_blocks.empty()) {
+            return globalAlignKSW2(ref, query, cfg);
+        }
+
         cigar::Cigar_t result;
-        result.reserve(chain_anchors.size() * 2 + 2);
+        result.reserve(match_blocks.size() * 2 + 2);
 
         std::size_t ref_pos = 0;
         std::size_t qry_pos = 0;
@@ -678,27 +978,11 @@ namespace align
             qry_pos = qry_start + c_qry;
         };
 
-        // 左端：起点到第一个锚点
-        {
-            const auto& first = chain_anchors.front();
-            append_segment(ref_pos, first.pos_ref, qry_pos, first.pos_qry, first_cfg);
-        }
-
-        // 逐锚点：处理 span 和 gap
-        for (std::size_t i = 0; i < chain_anchors.size(); ++i) {
-            const auto& a = chain_anchors[i];
-
-            const std::size_t a_ref_start = static_cast<std::size_t>(a.pos_ref);
-            const std::size_t a_qry_start = static_cast<std::size_t>(a.pos_qry);
-            const std::size_t a_ref_end = a_ref_start + static_cast<std::size_t>(a.span);
-            const std::size_t a_qry_end = a_qry_start + static_cast<std::size_t>(a.span);
-
-            append_segment(ref_pos, a_ref_end, qry_pos, a_qry_end, cfg);
-
-            if (i + 1 < chain_anchors.size()) {
-                const auto& b = chain_anchors[i + 1];
-                append_segment(ref_pos, b.pos_ref, qry_pos, b.pos_qry, cfg);
-            }
+        for (const MatchBlock& block : match_blocks) {
+            append_segment(ref_pos, block.ref_start, qry_pos, block.qry_start, first_cfg);
+            appendCigarOp(result, 'M', block.len);
+            ref_pos = block.ref_start + block.len;
+            qry_pos = block.qry_start + block.len;
         }
 
         // 右端：最后一个锚点到末尾
@@ -742,15 +1026,26 @@ namespace align
                       return a.pos_ref < b.pos_ref;
                   });
 
+        const std::vector<MatchBlock> match_blocks = buildExtendedMatchBlocks(
+            chain_anchors, ref_len, qry_len, query,
+            [&ref](std::size_t pos) {
+                return profileConsensusBaseAt(ref, pos);
+            });
+        if (match_blocks.empty()) {
+            return globalAlignPSW(ref, query, cfg);
+        }
+
         cigar::Cigar_t result;
-        result.reserve(chain_anchors.size() * 2 + 2);
+        result.reserve(match_blocks.size() * 2 + 2);
 
         std::size_t ref_pos = 0;
         std::size_t qry_pos = 0;
 
         auto append_segment = [&](std::size_t ref_start, std::size_t ref_end,
-                                  std::size_t qry_start, std::size_t qry_end, align::AlignConfig seg_cfg,
-                                  bool reverse_for_align = false) {
+                                  std::size_t qry_start, std::size_t qry_end,
+                                  align::AlignConfig seg_cfg,
+                                  bool use_terminal_ksw = false,
+                                  bool reverse_from_anchor = false) {
             // 边界裁剪
             ref_start = std::min(ref_start, ref_len);
             ref_end = std::min(ref_end, ref_len);
@@ -760,47 +1055,20 @@ namespace align
             if (ref_end < ref_start) ref_end = ref_start;
             if (qry_end < qry_start) qry_end = qry_start;
 
-            //const std::string seg_ref = ref_string.substr(ref_start, ref_end - ref_start);
-            std::size_t seg_ref_len = ref_end - ref_start;
-            ProfileMatrix seg_ref;
-            seg_ref.len = static_cast<int>(seg_ref_len);
-            seg_ref.dim = ref.dim;
-            seg_ref.depth = ref.depth;
-            if (seg_ref_len > 0) {
-                const std::size_t offset = ref_start * static_cast<std::size_t>(ref.dim);
-                const std::size_t count = seg_ref_len * static_cast<std::size_t>(ref.dim);
-                seg_ref.prof.assign(ref.prof.begin() + static_cast<std::ptrdiff_t>(offset),
-                                    ref.prof.begin() + static_cast<std::ptrdiff_t>(offset + count));
-            }
-
-            std::string seg_qry = query.substr(qry_start, qry_end - qry_start);
+            const std::size_t seg_ref_len = ref_end - ref_start;
+            const std::string seg_qry = query.substr(qry_start, qry_end - qry_start);
             const std::size_t seg_qry_len = seg_qry.size();
 
-            // 仅用于尾段的质量优化：反向输入后求解，再把 CIGAR 顺序回正。
-            // 注意：ref/query 角色不变，因此只需要反转 CIGAR 单元顺序，不需要互换 I/D。
-            if (reverse_for_align) {
-                std::reverse(seg_qry.begin(), seg_qry.end());
-
-                // ProfileMatrix 是按“列块(dim)”线性存储，反向时必须按列翻转，
-                // 否则会破坏单列内部 A/C/G/T/N 计数布局。
-                if (seg_ref_len > 1) {
-                    const std::size_t dim = static_cast<std::size_t>(seg_ref.dim);
-                    std::vector<uint32_t> reversed_prof(seg_ref.prof.size(), 0U);
-                    for (std::size_t dst_col = 0; dst_col < seg_ref_len; ++dst_col) {
-                        const std::size_t src_col = (seg_ref_len - 1U) - dst_col;
-                        const std::size_t src_off = src_col * dim;
-                        const std::size_t dst_off = dst_col * dim;
-                        std::copy(seg_ref.prof.begin() + static_cast<std::ptrdiff_t>(src_off),
-                                  seg_ref.prof.begin() + static_cast<std::ptrdiff_t>(src_off + dim),
-                                  reversed_prof.begin() + static_cast<std::ptrdiff_t>(dst_off));
-                    }
-                    seg_ref.prof.swap(reversed_prof);
-                }
-            }
-
-            cigar::Cigar_t seg_cigar = globalAlignPSW(seg_ref, seg_qry, seg_cfg);
-            if (reverse_for_align) {
-                std::reverse(seg_cigar.begin(), seg_cigar.end());
+            cigar::Cigar_t seg_cigar;
+            if (use_terminal_ksw) {
+                seg_cigar = alignTerminalKSW2(
+                    ref_string.substr(ref_start, seg_ref_len),
+                    seg_qry,
+                    seg_cfg,
+                    reverse_from_anchor);
+            } else {
+                ProfileMatrix seg_ref = sliceProfile(ref, ref_start, ref_end);
+                seg_cigar = globalAlignPSW(seg_ref, seg_qry, seg_cfg);
             }
 
             // 用 CIGAR 反推消耗长度
@@ -816,10 +1084,10 @@ namespace align
                 // 兜底策略：Query 全 I、Ref 全 D
                 cigar::Cigar_t forced_cigar;
                 if (seg_qry_len > 0) {
-                    forced_cigar.push_back(cigar::cigarToInt('I', static_cast<uint32_t>(seg_qry_len)));
+                    appendCigarOp(forced_cigar, 'I', seg_qry_len);
                 }
                 if (seg_ref_len > 0) {
-                    forced_cigar.push_back(cigar::cigarToInt('D', static_cast<uint32_t>(seg_ref_len)));
+                    appendCigarOp(forced_cigar, 'D', seg_ref_len);
                 }
                 cigar::appendCigar(result, forced_cigar);
 
@@ -834,32 +1102,20 @@ namespace align
             qry_pos = qry_start + c_qry;
         };
 
-        // 左端：起点到第一个锚点
-        {
-            const auto& first = chain_anchors.front();
-            append_segment(ref_pos, first.pos_ref, qry_pos, first.pos_qry, first_cfg);
-        }
-
-        // 逐锚点：处理 span 和 gap
-        for (std::size_t i = 0; i < chain_anchors.size(); ++i) {
-            const auto& a = chain_anchors[i];
-
-            const std::size_t a_ref_start = static_cast<std::size_t>(a.pos_ref);
-            const std::size_t a_qry_start = static_cast<std::size_t>(a.pos_qry);
-            const std::size_t a_ref_end = a_ref_start + static_cast<std::size_t>(a.span);
-            const std::size_t a_qry_end = a_qry_start + static_cast<std::size_t>(a.span);
-
-            append_segment(ref_pos, a_ref_end, qry_pos, a_qry_end, cfg);
-
-            if (i + 1 < chain_anchors.size()) {
-                const auto& b = chain_anchors[i + 1];
-                append_segment(ref_pos, b.pos_ref, qry_pos, b.pos_qry, cfg);
-            }
+        for (std::size_t i = 0; i < match_blocks.size(); ++i) {
+            const MatchBlock& block = match_blocks[i];
+            const bool left_terminal = (i == 0);
+            append_segment(ref_pos, block.ref_start, qry_pos, block.qry_start,
+                           left_terminal ? first_cfg : cfg,
+                           left_terminal,
+                           left_terminal);
+            appendCigarOp(result, 'M', block.len);
+            ref_pos = block.ref_start + block.len;
+            qry_pos = block.qry_start + block.len;
         }
 
         // 右端：最后一个锚点到末尾
-        // 尾段启用“反向比对 + CIGAR 回正”，仅影响该段求解过程，不改变最终输出方向。
-        append_segment(ref_pos, ref_len, qry_pos, qry_len, cfg, true);
+        append_segment(ref_pos, ref_len, qry_pos, qry_len, cfg, true, false);
 
         // 最终一致性检查
         const std::size_t total_ref = cigar::getRefLength(result);
@@ -900,17 +1156,33 @@ namespace align
                       return a.pos_ref < b.pos_ref;
                   });
 
+        const std::vector<MatchBlock> match_blocks = buildExtendedMatchBlocks(
+            chain_anchors, ref_len, qry_len, query,
+            [&ref](std::size_t pos) {
+                return profileConsensusBaseAt(ref, pos);
+            });
+        if (match_blocks.empty()) {
+            return globalAlignPSW(ref, query, cfg);
+        }
+
+        enum class SegmentKind {
+            Psw,
+            TerminalKsw,
+            DirectMatch
+        };
+
         struct SegmentTask {
             std::size_t ref_start = 0;
             std::size_t ref_end = 0;
             std::size_t qry_start = 0;
             std::size_t qry_end = 0;
             align::AlignConfig seg_cfg{};
-            bool reverse_for_align = false;
+            SegmentKind kind = SegmentKind::Psw;
+            bool reverse_from_anchor = false;
         };
 
         std::vector<SegmentTask> tasks;
-        tasks.reserve(chain_anchors.size() * 2 + 2);
+        tasks.reserve(match_blocks.size() * 2 + 2);
 
         std::size_t ref_pos = 0;
         std::size_t qry_pos = 0;
@@ -918,7 +1190,8 @@ namespace align
         auto push_segment = [&](std::size_t ref_start, std::size_t ref_end,
                                 std::size_t qry_start, std::size_t qry_end,
                                 align::AlignConfig seg_cfg,
-                                bool reverse_for_align = false) {
+                                SegmentKind kind,
+                                bool reverse_from_anchor = false) {
             // 边界裁剪：保持和串行版 append_segment 完全一致
             ref_start = std::min(ref_start, ref_len);
             ref_end = std::min(ref_end, ref_len);
@@ -927,6 +1200,11 @@ namespace align
 
             if (ref_end < ref_start) ref_end = ref_start;
             if (qry_end < qry_start) qry_end = qry_start;
+            if (ref_start == ref_end && qry_start == qry_end) {
+                ref_pos = ref_end;
+                qry_pos = qry_end;
+                return;
+            }
 
             SegmentTask task;
             task.ref_start = ref_start;
@@ -934,7 +1212,8 @@ namespace align
             task.qry_start = qry_start;
             task.qry_end = qry_end;
             task.seg_cfg = seg_cfg;
-            task.reverse_for_align = reverse_for_align;
+            task.kind = kind;
+            task.reverse_from_anchor = reverse_from_anchor;
 
             tasks.push_back(std::move(task));
 
@@ -945,92 +1224,62 @@ namespace align
             qry_pos = qry_end;
         };
 
-        // 左端：起点到第一个锚点
-        {
-            const auto& first = chain_anchors.front();
-            push_segment(ref_pos, first.pos_ref, qry_pos, first.pos_qry, first_cfg);
+        auto push_match = [&](const MatchBlock& block) {
+            SegmentTask task;
+            task.ref_start = block.ref_start;
+            task.ref_end = block.ref_start + block.len;
+            task.qry_start = block.qry_start;
+            task.qry_end = block.qry_start + block.len;
+            task.seg_cfg = cfg;
+            task.kind = SegmentKind::DirectMatch;
+            tasks.push_back(std::move(task));
+            ref_pos = block.ref_start + block.len;
+            qry_pos = block.qry_start + block.len;
+        };
+
+        for (std::size_t i = 0; i < match_blocks.size(); ++i) {
+            const MatchBlock& block = match_blocks[i];
+            const bool left_terminal = (i == 0);
+            push_segment(ref_pos, block.ref_start, qry_pos, block.qry_start,
+                         left_terminal ? first_cfg : cfg,
+                         left_terminal ? SegmentKind::TerminalKsw : SegmentKind::Psw,
+                         left_terminal);
+            push_match(block);
         }
 
-        // 逐锚点：处理 span 和 gap
-        for (std::size_t i = 0; i < chain_anchors.size(); ++i) {
-            const auto& a = chain_anchors[i];
-
-            const std::size_t a_ref_start = static_cast<std::size_t>(a.pos_ref);
-            const std::size_t a_qry_start = static_cast<std::size_t>(a.pos_qry);
-            const std::size_t a_ref_end = a_ref_start + static_cast<std::size_t>(a.span);
-            const std::size_t a_qry_end = a_qry_start + static_cast<std::size_t>(a.span);
-
-            push_segment(ref_pos, a_ref_end, qry_pos, a_qry_end, cfg);
-
-            if (i + 1 < chain_anchors.size()) {
-                const auto& b = chain_anchors[i + 1];
-                push_segment(ref_pos, b.pos_ref, qry_pos, b.pos_qry, cfg);
-            }
-        }
-
-        // 右端：最后一个锚点到末尾
-        // 保留串行版逻辑：尾段启用“反向比对 + CIGAR 回正”
-        push_segment(ref_pos, ref_len, qry_pos, qry_len, cfg, true);
+        push_segment(ref_pos, ref_len, qry_pos, qry_len, cfg, SegmentKind::TerminalKsw, false);
 
         std::vector<cigar::Cigar_t> task_cigars(tasks.size());
 
     #ifdef _OPENMP
         const int use_threads = thread > 0 ? thread : omp_get_max_threads();
 
-    #pragma omp parallel for default(none) shared(tasks, task_cigars, ref, query) num_threads(use_threads) schedule(static)
+    #pragma omp parallel for default(none) shared(tasks, task_cigars, ref, ref_string, query) num_threads(use_threads) schedule(static)
     #endif
         for (int task_idx = 0; task_idx < static_cast<int>(tasks.size()); ++task_idx) {
             const SegmentTask& task = tasks[static_cast<std::size_t>(task_idx)];
 
             const std::size_t seg_ref_len = task.ref_end - task.ref_start;
+            const std::size_t seg_qry_len = task.qry_end - task.qry_start;
 
-            ProfileMatrix seg_ref;
-            seg_ref.len = static_cast<int>(seg_ref_len);
-            seg_ref.dim = ref.dim;
-            seg_ref.depth = ref.depth;
-
-            if (seg_ref_len > 0) {
-                const std::size_t offset = task.ref_start * static_cast<std::size_t>(ref.dim);
-                const std::size_t count = seg_ref_len * static_cast<std::size_t>(ref.dim);
-
-                seg_ref.prof.assign(
-                    ref.prof.begin() + static_cast<std::ptrdiff_t>(offset),
-                    ref.prof.begin() + static_cast<std::ptrdiff_t>(offset + count)
-                );
+            if (task.kind == SegmentKind::DirectMatch) {
+                cigar::Cigar_t match_cigar;
+                appendCigarOp(match_cigar, 'M', seg_ref_len);
+                task_cigars[static_cast<std::size_t>(task_idx)] = std::move(match_cigar);
+                continue;
             }
 
             std::string seg_qry = query.substr(task.qry_start, task.qry_end - task.qry_start);
-            const std::size_t seg_qry_len = seg_qry.size();
-
-            // 保留串行版尾段反向比对逻辑
-            if (task.reverse_for_align) {
-                std::reverse(seg_qry.begin(), seg_qry.end());
-
-                // ProfileMatrix 是按“列块(dim)”线性存储，反向时必须按列翻转
-                if (seg_ref_len > 1) {
-                    const std::size_t dim = static_cast<std::size_t>(seg_ref.dim);
-                    std::vector<uint32_t> reversed_prof(seg_ref.prof.size(), 0U);
-
-                    for (std::size_t dst_col = 0; dst_col < seg_ref_len; ++dst_col) {
-                        const std::size_t src_col = (seg_ref_len - 1U) - dst_col;
-                        const std::size_t src_off = src_col * dim;
-                        const std::size_t dst_off = dst_col * dim;
-
-                        std::copy(
-                            seg_ref.prof.begin() + static_cast<std::ptrdiff_t>(src_off),
-                            seg_ref.prof.begin() + static_cast<std::ptrdiff_t>(src_off + dim),
-                            reversed_prof.begin() + static_cast<std::ptrdiff_t>(dst_off)
-                        );
-                    }
-
-                    seg_ref.prof.swap(reversed_prof);
-                }
-            }
-
-            cigar::Cigar_t seg_cigar = globalAlignPSW(seg_ref, seg_qry, task.seg_cfg);
-
-            if (task.reverse_for_align) {
-                std::reverse(seg_cigar.begin(), seg_cigar.end());
+            cigar::Cigar_t seg_cigar;
+            if (task.kind == SegmentKind::TerminalKsw) {
+                seg_cigar = alignTerminalKSW2(
+                    ref_string.substr(task.ref_start, seg_ref_len),
+                    seg_qry,
+                    task.seg_cfg,
+                    task.reverse_from_anchor);
+            } else {
+                ProfileMatrix seg_ref = sliceProfile(ref, task.ref_start, task.ref_end);
+                seg_cigar = globalAlignPSW(seg_ref, seg_qry, task.seg_cfg);
             }
 
             const std::size_t c_ref = cigar::getRefLength(seg_cigar);
@@ -1050,15 +1299,11 @@ namespace align
                 cigar::Cigar_t forced_cigar;
 
                 if (seg_qry_len > 0) {
-                    forced_cigar.push_back(
-                        cigar::cigarToInt('I', static_cast<uint32_t>(seg_qry_len))
-                    );
+                    appendCigarOp(forced_cigar, 'I', seg_qry_len);
                 }
 
                 if (seg_ref_len > 0) {
-                    forced_cigar.push_back(
-                        cigar::cigarToInt('D', static_cast<uint32_t>(seg_ref_len))
-                    );
+                    appendCigarOp(forced_cigar, 'D', seg_ref_len);
                 }
 
                 task_cigars[static_cast<std::size_t>(task_idx)] = std::move(forced_cigar);
@@ -1069,7 +1314,7 @@ namespace align
 
         // 按原始分段顺序合并，保证结果不受并行执行顺序影响
         cigar::Cigar_t result;
-        result.reserve(chain_anchors.size() * 2 + 2);
+        result.reserve(match_blocks.size() * 2 + 2);
 
         for (const auto& seg_cigar : task_cigars) {
             cigar::appendCigar(result, seg_cigar);

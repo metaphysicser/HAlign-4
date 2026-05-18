@@ -269,6 +269,42 @@ TEST_SUITE("align") {
         CHECK(profile.prof[5 + 4] == 1);
     }
 
+    TEST_CASE("globalAlignSeq2Profile - terminal gap columns align through KSW extension") {
+        const std::string core =
+            "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"
+            "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"
+            "ACGTACGTACGTACGTACGT";
+        const std::string left_ref_gaps(12, '-');
+        const std::string right_ref_gaps(12, '-');
+        const std::string ref_string = left_ref_gaps + core + right_ref_gaps;
+        const std::string query = std::string(12, 'T') + core + std::string(12, 'G');
+
+        align::ProfileMatrix profile = align::ProfileMatrix::fromAlignedSequence(ref_string);
+
+        anchor::Anchors anchors;
+        auto add_anchor = [&anchors](std::uint32_t pos) {
+            anchor::Anchor a;
+            a.hash = 1000 + pos;
+            a.rid_ref = 0;
+            a.pos_ref = pos;
+            a.rid_qry = 0;
+            a.pos_qry = pos;
+            a.span = 20;
+            a.is_rev = false;
+            anchors.push_back(a);
+        };
+        add_anchor(12);
+        add_anchor(42);
+        add_anchor(72);
+
+        const cigar::Cigar_t cigar = align::globalAlignSeq2Profile(
+            profile, ref_string, query, anchors);
+
+        CHECK(cigar::getRefLength(cigar) == ref_string.size());
+        CHECK(cigar::getQueryLength(cigar) == query.size());
+        CHECK(!cigar.empty());
+    }
+
     TEST_CASE("globalAlignKSW2 - 精确匹配") {
         std::string seq = "ACGTACGTACGT";
         auto cigar = align::globalAlignKSW2(seq, seq);
