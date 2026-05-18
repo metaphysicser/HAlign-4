@@ -309,7 +309,7 @@ namespace align
                 }
             }
 
-            seq.push_back(total == 0 ? '-' : bases[best_idx]);
+            seq.push_back(profile.depth - total > best_count ? '-' : bases[best_idx]);
         }
 
         return seq;
