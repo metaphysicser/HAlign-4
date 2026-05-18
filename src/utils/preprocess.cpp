@@ -172,7 +172,7 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
 
 
 void alignConsensusSequence(const FilePath& input_file, const FilePath& output_file,
-                            const std::string& msa_tool, int threads)
+                            const std::string& msa_tool, int threads, bool verbose)
 {
 
     // 检查输入文件是否存在
@@ -184,17 +184,21 @@ void alignConsensusSequence(const FilePath& input_file, const FilePath& output_f
     // 记录开始时间
     const auto t_start = std::chrono::steady_clock::now();
 
-    spdlog::info("Starting consensus alignment");
-    spdlog::info("  input : {}", input_file.string());
-    spdlog::info("  output: {}", output_file.string());
-    spdlog::info("  tool  : {}", msa_tool);
-    spdlog::info("  thrs  : {}", threads);
+    if (verbose) {
+        spdlog::info("Starting consensus alignment");
+        spdlog::info("  input : {}", input_file.string());
+        spdlog::info("  output: {}", output_file.string());
+        spdlog::info("  tool  : {}", msa_tool);
+        spdlog::info("  thrs  : {}", threads);
+    }
 
     // 尝试记录输入文件大小（若可访问）
     try {
         if (std::filesystem::exists(input_file)) {
             auto in_size = std::filesystem::file_size(input_file);
-            spdlog::info("Input file size: {} bytes", in_size);
+            if (verbose) {
+                spdlog::info("Input file size: {} bytes", in_size);
+            }
         }
     } catch (const std::exception &e) {
         spdlog::warn("Failed to stat input file {}: {}", input_file.string(), e.what());
@@ -203,8 +207,10 @@ void alignConsensusSequence(const FilePath& input_file, const FilePath& output_f
     // 组装命令。默认把 -i / -o / -t 作为参数传入，便于未来统一替换为 cmd 模块的调用。
     cmd::BuildOptions build_opt;
     const std::string cmd_str = cmd::buildCommand(msa_tool,input_file.string(),output_file.string(),threads, build_opt);
-    spdlog::info("Built MSA command (length {}): {}", cmd_str.size(), cmd_str);
-    spdlog::info("MSA command (escaped): {}", cmd_str);
+    if (verbose) {
+        spdlog::info("Built MSA command (length {}): {}", cmd_str.size(), cmd_str);
+        spdlog::info("MSA command (escaped): {}", cmd_str);
+    }
 
     // 调用外部命令（当前使用 std::system；若以后替换为项目内 cmd 接口，只需修改此处）
     try {
@@ -215,7 +221,7 @@ void alignConsensusSequence(const FilePath& input_file, const FilePath& output_f
 
         if (rc != 0) {
             spdlog::error("MSA command failed (exit code {}): {}", rc, cmd_str);
-        } else {
+        } else if (verbose) {
             spdlog::info("MSA command exited with code 0 (success). Elapsed: {:.3f} s", cmd_elapsed);
         }
 
@@ -223,7 +229,9 @@ void alignConsensusSequence(const FilePath& input_file, const FilePath& output_f
         try {
             if (std::filesystem::exists(output_file)) {
                 auto out_size = std::filesystem::file_size(output_file);
-                spdlog::info("Aligned consensus output exists: {} ({} bytes)", output_file.string(), out_size);
+                if (verbose) {
+                    spdlog::info("Aligned consensus output exists: {} ({} bytes)", output_file.string(), out_size);
+                }
                 if (out_size == 0) {
                     spdlog::warn("Aligned consensus output is empty: {}", input_file.string());
                 }
@@ -240,7 +248,9 @@ void alignConsensusSequence(const FilePath& input_file, const FilePath& output_f
 
     const auto t_end = std::chrono::steady_clock::now();
     const double elapsed_s = std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
-    spdlog::info("Finished consensus alignment. Total elapsed: {:.3f} s", elapsed_s);
+    if (verbose) {
+        spdlog::info("Finished consensus alignment. Total elapsed: {:.3f} s", elapsed_s);
+    }
 }
 
 // ==============================================================

@@ -3,6 +3,7 @@
 #include "preprocess.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -677,6 +678,22 @@ namespace {
         file_io::ensureDirectoryExists(msa_dir, "reference-guided insertion MSA dir");
 
         const std::string effective_msa_tool = msa_tool.empty() ? DEFAULT_MSA_CMD : msa_tool;
+        std::size_t external_slot_count = 0;
+        for (const auto& [slot, entries] : slot_groups) {
+            (void)slot;
+            if (entries.size() > 1U) {
+                ++external_slot_count;
+            }
+        }
+        if (external_slot_count != 0) {
+            spdlog::info("Reference-guided insertion MSA: {} slots with insertions, {} require external alignment",
+                         slot_groups.size(),
+                         external_slot_count);
+        }
+        const std::size_t progress_interval =
+            external_slot_count == 0 ? 1U : std::max<std::size_t>(1U, external_slot_count / 20U);
+        std::size_t processed_external_slots = 0;
+        const auto progress_start = std::chrono::steady_clock::now();
 
         for (const auto& [slot, entries] : slot_groups) {
             if (entries.empty()) {
@@ -697,12 +714,30 @@ namespace {
                 msa_dir / ("slot_" + std::to_string(slot) + "_aligned.fasta");
 
             writeSlotInsertionMsaInput(input_path, entries);
-            alignConsensusSequence(input_path, aligned_path, effective_msa_tool, threads);
+            alignConsensusSequence(input_path, aligned_path, effective_msa_tool, threads, false);
             file_io::requireRegularFile(aligned_path, "aligned insertion MSA");
 
             result.widths[slot] =
                 readSlotInsertionMsaOutput(aligned_path, entries, result.aligned_segments);
             ++result.aligned_slots;
+            ++processed_external_slots;
+
+            if (processed_external_slots == 1U ||
+                processed_external_slots == external_slot_count ||
+                processed_external_slots % progress_interval == 0U) {
+                const auto now = std::chrono::steady_clock::now();
+                const double elapsed_s =
+                    std::chrono::duration_cast<std::chrono::duration<double>>(now - progress_start).count();
+                const double percent = external_slot_count == 0
+                    ? 100.0
+                    : (100.0 * static_cast<double>(processed_external_slots) /
+                       static_cast<double>(external_slot_count));
+                spdlog::info("Reference-guided insertion MSA progress: {}/{} slots ({:.1f}%), elapsed {:.1f} s",
+                             processed_external_slots,
+                             external_slot_count,
+                             percent,
+                             elapsed_s);
+            }
         }
 
         return result;

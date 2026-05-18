@@ -52,6 +52,7 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
 //  - msa_tool: 多序列比对命令模板字符串（例如 "mafft --auto {input} > {output}"）
 //  - workdir: 用于运行命令时的当前工作目录（命令中的相对路径以此为基准）
 //  - threads: 分配给 MSA 命令的线程数（传递给模板中的 {thread}），具体生效与否取决于所用 MSA 工具
+//  - verbose: 是否输出详细命令和文件检查日志；批量调用时可设为 false 以避免刷屏
 //
 // 性能提示：
 //  - MSA 通常是 CPU 密集型、内存敏感的步骤，请根据目标机器调整 `threads` 和 MSA 工具的参数；
@@ -59,7 +60,7 @@ uint_t preprocessInputFasta(const std::string input_path, const std::string work
 //
 // ==============================================================
 void alignConsensusSequence(const FilePath& input_file, const FilePath& output_file,
-                            const std::string& msa_tool, int threads);
+                            const std::string& msa_tool, int threads, bool verbose = true);
 
 // ==============================================================
 // validateRefAlignedConsistency
