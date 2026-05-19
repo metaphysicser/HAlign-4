@@ -204,6 +204,41 @@ void alignConsensusSequence(const FilePath& input_file, const FilePath& output_f
         spdlog::warn("Failed to stat input file {}: {}", input_file.string(), e.what());
     }
 
+    // 单条序列不需要做 MSA。这里最多读取两条记录：发现第二条就立即退出检查，
+    // 避免为了计数扫描整个 FASTA。
+    try {
+        seq_io::KseqReader reader(input_file);
+        seq_io::SeqRecord rec;
+        const bool has_first_record = reader.next(rec);
+        if (has_first_record && !reader.next(rec)) {
+            if (verbose) {
+                spdlog::info("Input FASTA contains one sequence; skipping MSA and copying input to output");
+            }
+
+            try {
+                file_io::copyFile(input_file, output_file);
+                if (verbose) {
+                    auto out_size = std::filesystem::file_size(output_file);
+                    spdlog::info("Copied single-sequence consensus output: {} ({} bytes)",
+                                 output_file.string(), out_size);
+                }
+            } catch (const std::exception &e) {
+                spdlog::error("Failed to copy single-sequence FASTA {} -> {}: {}",
+                              input_file.string(), output_file.string(), e.what());
+            }
+
+            const auto t_end = std::chrono::steady_clock::now();
+            const double elapsed_s = std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
+            if (verbose) {
+                spdlog::info("Finished consensus alignment shortcut. Total elapsed: {:.3f} s", elapsed_s);
+            }
+            return;
+        }
+    } catch (const std::exception &e) {
+        spdlog::warn("Failed to inspect FASTA record count for {}: {}; falling back to MSA command",
+                     input_file.string(), e.what());
+    }
+
     // 组装命令。默认把 -i / -o / -t 作为参数传入，便于未来统一替换为 cmd 模块的调用。
     cmd::BuildOptions build_opt;
     const std::string cmd_str = cmd::buildCommand(msa_tool,input_file.string(),output_file.string(),threads, build_opt);
@@ -513,4 +548,3 @@ std::array<int8_t, 25> readScoreMatrixFile(const std::string& path) {
     }
     return matrix;
 }
-
