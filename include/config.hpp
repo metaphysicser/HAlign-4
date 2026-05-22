@@ -49,7 +49,7 @@ const std::string MINIPOA_CMD = "minipoa {input} -S -t {thread} -r1 > {output}";
 const std::string MAFFT_MSA_CMD = "mafft --thread {thread} --auto {input} > {output}"; // MAFFT 多序列比对命令模板示例
 const std::string CLUSTALO_MSA_CMD = "clustalo -i {input} -o {output} --threads {thread}"; // Clustal Omega 多序列比对命令模板示例
 
-const std::string DEFAULT_MSA_CMD = MAFFT_MSA_CMD; // 默认多序列比对命令模板
+const std::string DEFAULT_MSA_CMD = MINIPOA_CMD; // 默认多序列比对命令模板
 inline constexpr int AUTO_BAND_WIDTH = -2; // --band 的内部默认值：自动估计；-1 表示禁用 band
 
 enum class InsertionMergeMode {
