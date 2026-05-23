@@ -5,7 +5,7 @@ This document explains the command-line arguments of `halign4` and provides runn
 > Notes
 >
 > - `halign4` needs **two mandatory arguments**: `-i/--input` and `-o/--output`.
-> - `-w/--workdir` is optional. If not provided, the program will create a default workdir: `./tmp-<random>`.
+> - `-w/--workdir` is optional. If not provided, the program will create a default workdir under the output file directory: `<output-dir>/tmp-<random>`.
 > - Some options are validated by CLI11 at parse time (for example `-i` requires an existing file).
 > - `--msa-tool` supports **keywords** (`minipoa` / `mafft` / `clustalo`) and also supports a **custom command template string**.
 >   It is **not** required to be a file path.
@@ -49,6 +49,7 @@ Print version information and exit.
 #### `-w, --workdir <path>`
 Working directory used for intermediate files.
 
+- Default: `<output-dir>/tmp-<random>`, where `<output-dir>` is the directory part of `-o/--output`. If `-o` has no directory component, the current directory is used.
 - The program will create sub-directories under this path (for example `data/`, `temp/`, `result/`).
 - **Important**: some builds may require `workdir` to be empty to avoid overwriting previous outputs (see project README).
 

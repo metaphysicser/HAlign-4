@@ -183,14 +183,14 @@ static int get_default_threads() {
 // ------------------------------------------------------------------
 // 默认 workdir 生成器（关键逻辑新增，需中文注释）
 //
-// 需求：用户不传 -w/--workdir 时，自动使用 "./tmp-随机数"。
+// 需求：用户不传 -w/--workdir 时，在输出文件所在目录下自动使用 "tmp-随机数"。
 // 设计点：
-// 1) 这里返回的是相对路径字符串（"./tmp-..."），保持与 CLI 输入一致；
+// 1) 默认目录跟随 -o/--output 的父目录，便于结果文件与临时文件位于同一输出区域；
 // 2) 使用“时间戳 + 随机数”拼接，降低并发/重复运行时的碰撞概率；
 // 3) 不在此处创建目录：目录的创建/清空策略仍由 checkOption()->file_io::prepareEmptydir 统一处理，
 //    以保证现有流程与错误处理逻辑不变。
 // ------------------------------------------------------------------
-static std::string makeDefaultWorkdir() {
+static std::string makeDefaultWorkdir(const std::string& output_path) {
     using Clock = std::chrono::high_resolution_clock;
     const auto now = Clock::now().time_since_epoch();
     const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
@@ -201,9 +201,15 @@ static std::string makeDefaultWorkdir() {
     std::uniform_int_distribution<uint32_t> dist(0u, 0xFFFFFFFFu);
     const uint32_t r = dist(gen);
 
-    std::ostringstream oss;
-    oss << "./tmp-" << ns << "-" << std::hex << std::setw(8) << std::setfill('0') << r;
-    return oss.str();
+    std::ostringstream dirname;
+    dirname << "tmp-" << ns << "-" << std::hex << std::setw(8) << std::setfill('0') << r;
+
+    std::filesystem::path output_dir = std::filesystem::path(output_path).parent_path();
+    if (output_dir.empty()) {
+        output_dir = ".";
+    }
+
+    return (output_dir / dirname.str()).string();
 }
 
 struct Options {
@@ -286,16 +292,16 @@ static void setupCli(CLI::App& app, Options& opt) {
         ->required();
 
     // workdir：改为可选。
-    // 若用户不提供 -w，则在 main() 解析完成后用 makeDefaultWorkdir() 生成默认值。
+    // 若用户不提供 -w，则在 main() 解析完成后用 makeDefaultWorkdir(opt.output) 生成默认值。
     // 这样做的原因：CLI11 的 default_val 会直接在 -h 中展示默认值；但这里默认值带随机数，
     // 展示出来会让帮助信息“每次不同”，也会误导用户认为必须指定固定路径。
     // -w/--workdir：工作目录（存放中间文件/日志/临时结果）。
     // 说明：
-    // - 若不提供，程序会自动生成 ./tmp-<随机数>；
+    // - 若不提供，程序会在输出文件所在目录下自动生成 tmp-<随机数>；
     // - 目录下会创建 data/raw_data、data/clean_data、temp、result 等子目录；
     // - Release 模式下要求 workdir 为空目录（避免覆盖旧结果）；Debug 模式允许复用（便于迭代）。
     app.add_option("-w,--workdir", opt.workdir,
-                   "Working directory for intermediate files (default: ./tmp-<random>). ")
+                   "Working directory for intermediate files (default: <output-dir>/tmp-<random>). ")
         ->capture_default_str();
 
     // 可选参数（增加长参数形式）
@@ -610,9 +616,9 @@ public:
 	std::string make_usage(const CLI::App* app, std::string name) const override {
 		std::ostringstream out;
 		out << "Usage:\n"
-			<< "  ./halign4 -i <input.fa> -o <output.fa> -w </path/to/workdir> [options]\n\n"
+			<< "  ./halign4 -i <input.fa> -o <output.fa> [options]\n\n"
 			<< "Example:\n"
-			<< "  ./halign4 -i input.fa -o output.fa -w ./tmp -t 8\n\n";
+			<< "  ./halign4 -i input.fa -o results/output.fa -t 8\n\n";
 		return out.str();
 	}
 };

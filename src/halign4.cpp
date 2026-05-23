@@ -209,7 +209,7 @@ int main(int argc, char** argv) {
 
         // 设置默认工作目录
         if (opt.workdir.empty()) {
-            opt.workdir = makeDefaultWorkdir();
+            opt.workdir = makeDefaultWorkdir(opt.output);
             spdlog::info("--workdir not provided, using default: {}", opt.workdir);
         }
 

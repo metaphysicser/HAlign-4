@@ -53,7 +53,7 @@ The most important parameters are:
 
 - `-i/--input`: input FASTA (required)
 - `-o/--output`: output aligned FASTA (required)
-- `-w/--workdir`: working directory (optional; default: `./tmp-<random>`)
+- `-w/--workdir`: working directory (optional; default: `<output-dir>/tmp-<random>`)
 - `--msa-tool`: MSA method (keyword: `minipoa`/`mafft`/`clustalo`, or a custom template)
 - `-r/--reference`: provide a reference/center FASTA (optional)
 - `-a/--reference-aligned`: treat `-r/--reference` as a pre-aligned reference MSA and strip gaps internally
