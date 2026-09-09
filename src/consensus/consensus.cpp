@@ -1,6 +1,7 @@
 #include "consensus.h"
 
 #include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <stdexcept>
 #include <thread>
@@ -32,6 +33,17 @@ namespace consensus
         upd(sc.u, 'U');
 
         return best_ch;
+    }
+
+    char pickConsensusCharWithGap(const SiteCount& sc)
+    {
+        const std::uint32_t best_non_gap = std::max({
+            sc.a, sc.c, sc.g, sc.t, sc.u, sc.n
+        });
+        if (sc.dash > best_non_gap) {
+            return '-';
+        }
+        return pickConsensusChar(sc);
     }
 
     // 将 consensus 序列按 FASTA 格式写出，行宽固定为 80
@@ -544,78 +556,18 @@ namespace consensus
         }
     }
 
-    /*
-     深入性能优化说明（补充）
 
-     以下注释面向想要进一步优化或调试性能的工程师，包含更具体的建议和硬件相关注意点：
-
-     1) False sharing 与缓存行对齐
-        - False sharing 发生在多个线程频繁写入同一 cache line（例如 SiteCount 的多个字段或相邻索引落在同一 64B cache line）。
-        - 减少 false sharing 的策略：
-          a) 线程本地累加（本文件采用）：每线程写自己的本地数组，最后合并；
-          b) 在 SiteCount 上做填充（padding）以使每个 SiteCount 占用整 cache line（内存消耗增加）；
-             仅当 SiteCount 更新极其频繁并且 T 很大时考虑；示例：alignas(64) 或在 SiteCount 后添加 uint8_t pad[...]
-          c) 让 OpenMP 为每个线程分配较大的连续 chunk（static schedule 与较大 chunk_size），减少线程交错写导致的共享。
-
-     2) 向量化与内存布局（SoA vs AoS）
-        - AoS（SiteCount 结构数组）对单一字段的连续访问不友好，向量化受限。
-        - SoA（Structure of Arrays）把 A/C/G/T/U 等分别放到独立数组，便于对单一字段做大范围加法并生成 SIMD 指令。
-        - 本实现提供 SoA 路径：在累加阶段对 a_ptr/c_ptr/g_ptr 等做连续写；在合并阶段再按列读取并写回。
-
-     3) 批大小（batch_size）与线程数（threads）选择建议
-        - 先根据内存限制估算最大可接受 batch_size： batch_memory ≈ T * aln_len * sizeof(counter)。
-        - 通常策略：保持 batch_size 足够大以 amortize 线程调度与合并成本，例如 1k~10k（视 aln_len 而定）；
-          但当 aln_len 很大（几十千或百万列）时 batch_size 可以较小。
-        - 以实验为准：在目标机器上运行一组试验（threads ∈ {1,2,4,8,...}, batch_size ∈ {64,256,1024,4096}）测量每秒处理基数。
-
-     4) NUMA 与亲和性
-        - 在 NUMA 芯片组上，尽量把线程固定到本地 NUMA 节点并把输入数据/locals 分配在同一 NUMA 节点上（使用 numactl 或 pthread_setaffinity_np）。
-        - 如果性能短板是内存带宽，考虑把大批次分配到不同 NUMA 节点并分别合并以减少跨节点流量。
-
-     5) 预取与预热
-        - __builtin_prefetch 能在某些平台明显降低缓存未命中，预取距离（例如 i+16）需根据 cache 行与访问模式调优。
-        - 可在微基准中试不同预取距离找到最佳点。
-
-     6) 内存与溢出安全
-        - 本实现使用 32-bit 计数（SiteCount 的字段）；若每列计数可能超过 2^32（非常大量序列），需切换为 64-bit（uint64_t）以避免溢出。
-        - 合并时采用 uint64_t 临时累加以避免短暂溢出，再截断回 32-bit 写入 SiteCount（或直接将 SiteCount 改为 uint64_t）。
-
-     7) 编译器生成的代码检查
-        - 若希望确认向量化是否生效，可以在带 -O3 -march=native 下查看编译器生成的汇编（-S 或 objdump），搜索 AVX/AVX2/AVX512 指令。
-        - 也可使用 clang 的 -Rpass=loop-vectorize 来让编译器报告成功的向量化。
-
-     8) 性能回归与测试
-        - 在引入任何优化后，务必使用回归测试确保输出一致（本项目已有测试套件）。
-        - 同时保留 baseline（未优化版本）以便比较性能提升。
-    */
-
-    // 下面对 SoA 批处理函数再补充：具体如何调参与排查问题的建议
-    // - 如果发现合并阶段占用较多时间，可尝试把合并也做分块（例如一次合并一个列区间以提高局部性），
-    //   或者在合并时将每个线程负责的列区间固定，减少内存抖动。
-    // - 若出现内存带宽瓶颈，可尝试减少线程数或增加 batch_size，以便每次合并做更多工作再写回。
-
-    /*
-     generateConsensusSequence 的并行运行策略与建议：
-     - 对于小的 aln_len（例如 < 256），优先使用单线程或轻量并行；因为线程和合并开销可能大于收益。
-     - 对于大的 aln_len，使用 SoA + 线程本地累加（processBatchParallelWithSoA）通常能获得最佳吞吐。
-     - batch_size 值会影响性能：
-         * 小 batch：更实时、内存占用少，但同步开销高；
-         * 大 batch：更高吞吐但需要更大内存与更长延迟。
-     - 在部署前在目标机器上对 batch_size 与线程数进行基准测试（选择能最大化每秒处理碱基数的组合）。
-     *
-     * 实用调试/性能收集建议：
-     * - 使用 perf/top/htop 观察 CPU 利用率与内存带宽。
-     * - 使用 perf record / report 或 VTune 查看缓存未命中与分支失误热点。
-     * - 用不同优化编译选项（-O2 vs -O3，-march=native）对比，确认向量化是否被启用（查看编译器汇编输出）。
-    */
-    std::string generateConsensusSequence(const FilePath& aligned_fasta,
-                                                       const FilePath& out_fasta,
-                                                       const FilePath& out_json,
-                                                       std::uint64_t seq_limit,
-                                                       int thread,
-                                                       size_t batch_size)
+    ConsensusResult generateConsensusResult(const FilePath& aligned_fasta,
+                                            const FilePath& out_fasta,
+                                            const FilePath& out_json,
+                                            std::uint64_t seq_limit,
+                                            int thread,
+                                            size_t batch_size)
     {
         file_io::requireRegularFile(aligned_fasta, "aligned_fasta");
+        if (batch_size == 0) {
+            batch_size = 4096;
+        }
 
         seq_io::KseqReader reader(aligned_fasta);
 
@@ -630,7 +582,8 @@ namespace consensus
             throw std::runtime_error("first sequence length is 0: " + aligned_fasta.string());
         }
 
-        ConsensusJson cj;
+        ConsensusResult result;
+        ConsensusJson& cj = result.counts;
         cj.aln_len = (std::uint64_t)aln_len;
         cj.counts.assign(aln_len, SiteCount{});
 
@@ -662,44 +615,64 @@ namespace consensus
             throw std::runtime_error("failed to allocate thread-local counts");
         }
 
-        // 读取并按批处理
-        while ((seq_limit == 0 || num_seqs < seq_limit)) {
-            // 填充 batch
-            while (batch.size() < batch_size && (seq_limit == 0 || num_seqs < seq_limit)) {
-                if (!reader.next(rec)) break;
-                if (rec.seq.size() != aln_len) throw std::runtime_error("alignment length mismatch when reading");
-                batch.push_back(std::move(rec.seq));
-                ++num_seqs;
+        auto flush_batch = [&]() {
+            if (batch.empty()) {
+                return;
+            }
+            std::memset(locals.data(), 0, locals.size() * sizeof(SiteCount));
+            processBatchParallelWithLocals(batch, cj, thread, locals);
+            batch.clear();
+        };
+
+        // 读取并按批处理；注意不要在批次之间额外读取一条记录，避免跳过序列。
+        while (seq_limit == 0 || num_seqs < seq_limit) {
+            if (batch.size() >= batch_size) {
+                flush_batch();
             }
 
-            // 处理当前 batch
-            if (!batch.empty()) {
-                // 清零 locals 一次性（快速）
-                std::memset(locals.data(), 0, locals.size() * sizeof(SiteCount));
-                processBatchParallelWithLocals(batch, cj, thread, locals);
-                batch.clear();
+            if (!reader.next(rec)) {
+                break;
             }
-
-            if (!reader.next(rec)) break; // EOF
+            if (rec.seq.size() != aln_len) {
+                throw std::runtime_error("alignment length mismatch when reading");
+            }
+            batch.push_back(std::move(rec.seq));
+            ++num_seqs;
         }
+        flush_batch();
 
-
-        if (cj.num_seqs == 0) cj.num_seqs = num_seqs;
+        cj.num_seqs = num_seqs;
 
         if (num_seqs == 0) {
             throw std::runtime_error("no sequences processed");
         }
 
         // 生成共识序列（单线程选多数）
-        std::string consensus_seq(aln_len, 'N');
+        result.gap_seq.reserve(aln_len);
+        result.seq.reserve(aln_len);
         for (std::size_t i = 0; i < aln_len; ++i) {
-            consensus_seq[i] = pickConsensusChar(cj.counts[i]);
+            const char ch = pickConsensusCharWithGap(cj.counts[i]);
+            result.gap_seq.push_back(ch);
+            if (ch != '-') {
+                result.seq.push_back(ch);
+            }
         }
 
-        writeConsensusFasta(out_fasta, consensus_seq);
+        writeConsensusFasta(out_fasta, result.seq);
         writeCountsJson(out_json, cj);
 
-        return consensus_seq;
+        return result;
+    }
+
+    std::string generateConsensusSequence(const FilePath& aligned_fasta,
+                                                       const FilePath& out_fasta,
+                                                       const FilePath& out_json,
+                                                       std::uint64_t seq_limit,
+                                                       int thread,
+                                                       size_t batch_size)
+    {
+        return generateConsensusResult(
+            aligned_fasta, out_fasta, out_json, seq_limit, thread, batch_size).seq;
     }
 
 

@@ -1,5 +1,7 @@
 #include <doctest/doctest.h>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <random>
 #include <string>
 #include <vector>
@@ -213,6 +215,19 @@ static std::string cigarToString(const cigar::Cigar_t& cigar) {
 }
 
 // ------------------------------------------------------------------
+// 辅助函数：写一个最小 FASTA 文件，供 CLI 解析与文件存在性校验使用。
+// 说明：这里只需要“可被 ExistingFile 接受”的真实文件，不需要复杂内容。
+// ------------------------------------------------------------------
+static std::filesystem::path writeMiniFasta(const std::filesystem::path& p, const std::string& name) {
+    std::ofstream ofs(p, std::ios::binary);
+    REQUIRE_MESSAGE(ofs.good(), "cannot create fasta: " << p.string());
+    ofs << ">" << name << "\n";
+    ofs << "ACGTACGT\n";
+    ofs.flush();
+    return p;
+}
+
+// ------------------------------------------------------------------
 // 性能测试辅助：计时器
 // ------------------------------------------------------------------
 struct Timer {
@@ -230,6 +245,65 @@ struct Timer {
 // 测试套件：正确性测试
 // ------------------------------------------------------------------
 TEST_SUITE("align") {
+
+    TEST_CASE("ProfileMatrix - build from consensus counts keeps MSA columns") {
+        consensus::ConsensusJson cj;
+        cj.num_seqs = 3;
+        cj.aln_len = 2;
+        cj.counts.resize(2);
+        cj.counts[0].a = 2;
+        cj.counts[0].dash = 1;
+        cj.counts[1].c = 1;
+        cj.counts[1].u = 1;
+        cj.counts[1].n = 1;
+
+        align::ProfileMatrix profile = align::ProfileMatrix::fromConsensusCounts(cj);
+
+        CHECK(profile.len == 2);
+        CHECK(profile.dim == 5);
+        CHECK(profile.depth == 3);
+        CHECK(profile.prof[0] == 2);
+        CHECK(profile.prof[1] == 0);
+        CHECK(profile.prof[5 + 1] == 1);
+        CHECK(profile.prof[5 + 3] == 1);
+        CHECK(profile.prof[5 + 4] == 1);
+    }
+
+    TEST_CASE("globalAlignSeq2Profile - terminal gap columns align through KSW extension") {
+        const std::string core =
+            "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"
+            "ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT"
+            "ACGTACGTACGTACGTACGT";
+        const std::string left_ref_gaps(12, '-');
+        const std::string right_ref_gaps(12, '-');
+        const std::string ref_string = left_ref_gaps + core + right_ref_gaps;
+        const std::string query = std::string(12, 'T') + core + std::string(12, 'G');
+
+        align::ProfileMatrix profile = align::ProfileMatrix::fromAlignedSequence(ref_string);
+
+        anchor::Anchors anchors;
+        auto add_anchor = [&anchors](std::uint32_t pos) {
+            anchor::Anchor a;
+            a.hash = 1000 + pos;
+            a.rid_ref = 0;
+            a.pos_ref = pos;
+            a.rid_qry = 0;
+            a.pos_qry = pos;
+            a.span = 20;
+            a.is_rev = false;
+            anchors.push_back(a);
+        };
+        add_anchor(12);
+        add_anchor(42);
+        add_anchor(72);
+
+        const cigar::Cigar_t cigar = align::globalAlignSeq2Profile(
+            profile, ref_string, query, anchors);
+
+        CHECK(cigar::getRefLength(cigar) == ref_string.size());
+        CHECK(cigar::getQueryLength(cigar) == query.size());
+        CHECK(!cigar.empty());
+    }
 
     TEST_CASE("globalAlignKSW2 - 精确匹配") {
         std::string seq = "ACGTACGTACGT";
@@ -490,6 +564,161 @@ TEST_SUITE("align") {
             CHECK(op == 'D');
             CHECK(len == 3);
         }
+    }
+
+    TEST_CASE("CLI setup - parse --reference-msa") {
+        namespace fs = std::filesystem;
+
+        const fs::path dir = fs::current_path() / "halign4_tests_cli_ref_align";
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir, ec);
+        REQUIRE_MESSAGE(!ec, "cannot create temp dir: " << dir.string() << " (" << ec.message() << ")");
+
+        const fs::path input = writeMiniFasta(dir / "input.fasta", "input");
+        const fs::path ref = writeMiniFasta(dir / "ref.fasta", "ref");
+        const fs::path ref_align = writeMiniFasta(dir / "ref_aligned.fasta", "ref_aligned");
+        const fs::path output = dir / "out.fasta";
+
+        Options opt;
+        CLI::App app{"halign4"};
+        setupCli(app, opt);
+
+        std::vector<std::string> args = {
+            "halign4",
+            "-i", input.string(),
+            "-o", output.string(),
+            "-r", ref.string(),
+            "--reference-msa", ref_align.string()
+        };
+        std::vector<char*> argv;
+        argv.reserve(args.size());
+        for (auto& s : args) {
+            argv.push_back(s.data());
+        }
+
+        REQUIRE_NOTHROW(app.parse(static_cast<int>(argv.size()), argv.data()));
+        CHECK(opt.reference_path == ref.string());
+        CHECK(opt.reference_msa_path == ref_align.string());
+
+        fs::remove_all(dir, ec);
+    }
+
+    TEST_CASE("CLI setup - parse aligned reference flag") {
+        namespace fs = std::filesystem;
+
+        const fs::path dir = fs::current_path() / "halign4_tests_cli_ref_aligned_flag";
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir, ec);
+        REQUIRE_MESSAGE(!ec, "cannot create temp dir: " << dir.string() << " (" << ec.message() << ")");
+
+        const fs::path input = writeMiniFasta(dir / "input.fasta", "input");
+        const fs::path ref_align = writeMiniFasta(dir / "ref_aligned.fasta", "ref_aligned");
+        const fs::path output = dir / "out.fasta";
+
+        Options opt;
+        CLI::App app{"halign4"};
+        setupCli(app, opt);
+
+        std::vector<std::string> args = {
+            "halign4",
+            "-i", input.string(),
+            "-o", output.string(),
+            "-r", ref_align.string(),
+            "-a"
+        };
+        std::vector<char*> argv;
+        argv.reserve(args.size());
+        for (auto& s : args) {
+            argv.push_back(s.data());
+        }
+
+        REQUIRE_NOTHROW(app.parse(static_cast<int>(argv.size()), argv.data()));
+        CHECK(opt.reference_path == ref_align.string());
+        CHECK(opt.reference_is_aligned);
+        CHECK(opt.reference_msa_path.empty());
+
+        fs::remove_all(dir, ec);
+    }
+
+    TEST_CASE("CLI setup - parse profile reference options") {
+        namespace fs = std::filesystem;
+
+        const fs::path dir = fs::current_path() / "halign4_tests_cli_profile_ref_options";
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir, ec);
+        REQUIRE_MESSAGE(!ec, "cannot create temp dir: " << dir.string() << " (" << ec.message() << ")");
+
+        const fs::path input = writeMiniFasta(dir / "input.fasta", "input");
+        const fs::path output = dir / "out.fasta";
+
+        Options opt;
+        CLI::App app{"halign4"};
+        setupCli(app, opt);
+
+        std::vector<std::string> args = {
+            "halign4",
+            "-i", input.string(),
+            "-o", output.string(),
+            "--sketch-kmer-size", "10",
+            "--min-profile-references", "15",
+            "--max-profile-references", "40",
+            "--min-profile-reference-similarity", "0.7"
+        };
+        std::vector<char*> argv;
+        argv.reserve(args.size());
+        for (auto& s : args) {
+            argv.push_back(s.data());
+        }
+
+        REQUIRE_NOTHROW(app.parse(static_cast<int>(argv.size()), argv.data()));
+        CHECK(opt.sketch_kmer_size == 10);
+        CHECK(opt.min_profile_references == 15);
+        CHECK(opt.max_profile_references == 40);
+        CHECK(opt.min_profile_reference_similarity == doctest::Approx(0.7));
+
+        fs::remove_all(dir, ec);
+    }
+
+    TEST_CASE("CLI setup - parse merge output options") {
+        namespace fs = std::filesystem;
+
+        const fs::path dir = fs::current_path() / "halign4_tests_cli_merge_output_options";
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir, ec);
+        REQUIRE_MESSAGE(!ec, "cannot create temp dir: " << dir.string() << " (" << ec.message() << ")");
+
+        const fs::path input = writeMiniFasta(dir / "input.fasta", "input");
+        const fs::path output = dir / "out.fasta";
+        const fs::path insertion_tsv = dir / "insertions.tsv";
+
+        Options opt;
+        CLI::App app{"halign4"};
+        setupCli(app, opt);
+
+        std::vector<std::string> args = {
+            "halign4",
+            "-i", input.string(),
+            "-o", output.string(),
+            "--no-reference-output",
+            "--insertions-output", insertion_tsv.string(),
+            "--insertion-merge", "msa"
+        };
+        std::vector<char*> argv;
+        argv.reserve(args.size());
+        for (auto& s : args) {
+            argv.push_back(s.data());
+        }
+
+        REQUIRE_NOTHROW(app.parse(static_cast<int>(argv.size()), argv.data()));
+        CHECK(opt.no_reference_output);
+        CHECK(opt.insertions_output == insertion_tsv.string());
+        CHECK(opt.insertion_merge == "msa");
+
+        fs::remove_all(dir, ec);
     }
 }
 

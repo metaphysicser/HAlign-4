@@ -10,6 +10,9 @@
 #include "psw.h"
 #include <unordered_map>
 #include <filesystem>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include <functional>
@@ -50,98 +53,78 @@ namespace align {
     using SeedHit = minimizer::MinimizerHit;   // (ref_pos, query_pos, hash)
     using SeedHits = std::vector<SeedHit>;
     static constexpr seed::SeedKind kSeedKind = seed::SeedKind::minimizer;
-
-    typedef struct ProfileMatrix{
+	constexpr std::size_t kSketchBitsetRefThreshold = 10;
+	constexpr unsigned kProfileEqualWeightShift = 10;
+	constexpr std::uint32_t kProfileEqualWeightScale = 1U << kProfileEqualWeightShift;
+    struct ProfileMatrix{
         int len;
         int dim;
         int depth;              /* profile 总序列数 */
         std::vector<uint32_t> prof;   /* 每列 dim 个计数；前 m 个通常是 residue/base 计数 */
 
-        ProfileMatrix() : len(0), dim(5), depth(0), prof() {}
+        ProfileMatrix();
 
         // 从单条序列构造 profile：每列仅一个碱基计数为 1，其余为 0。
         // 约定 A/C/G/T/N -> 0/1/2/3/4，非法字符按 N 处理，保持与项目 DNA5 语义一致。
-        explicit ProfileMatrix(const std::string& seq) : len(static_cast<int>(seq.size())), dim(5), depth(seq.empty() ? 0 : 1), prof(static_cast<std::size_t>(len) * 5, 0U) {
-            for (int i = 0; i < len; ++i) {
-                const char ch = seq[static_cast<std::size_t>(i)];
-                int idx = 4;
-                switch (ch) {
-                case 'A': case 'a': idx = 0; break;
-                case 'C': case 'c': idx = 1; break;
-                case 'G': case 'g': idx = 2; break;
-                case 'T': case 't': idx = 3; break;
-                case 'U': case 'u': idx = 3; break; // RNA/U 按 T 处理
-                case 'N': case 'n': idx = 4; break;
-                default: idx = 4; break;
-                }
-                prof[static_cast<std::size_t>(i) * 5 + static_cast<std::size_t>(idx)] = 1U;
-            }
-        }
+        explicit ProfileMatrix(const std::string& seq);
+
+        explicit ProfileMatrix(const consensus::ConsensusJson& cj);
+
+        static int baseIndex(char ch);
+
+        static bool isGap(char ch);
+
+        static ProfileMatrix fromAlignedSequence(const std::string& seq);
+
+        // 从已对齐序列构建 profile：列坐标保持 MSA 坐标；gap 不进入 DNA5 计数，
+        // depth 仍记录参与统计的序列总数，使 gap-rich 列在 profile 中表现为低覆盖列。
+        static ProfileMatrix fromAlignedSequences(const std::vector<std::string>& aligned_sequences);
+
+        // 从 consensus 统计计数构建 profile，避免 RefAligner 重新扫描 MSA 文件。
+        // U 按 T 合并；gap 只通过 depth 与列总碱基数的差值体现，不占用额外维度。
+        static ProfileMatrix fromConsensusCounts(const consensus::ConsensusJson& cj);
     };
 
+	using ProfileMatrixMap = std::unordered_map<std::string, ProfileMatrix>;
 
+    ProfileMatrix normalizeProfileEqualWeight(const ProfileMatrix& profile);
+    ProfileMatrix combineProfilesEqualWeight(const std::vector<const ProfileMatrix*>& profiles);
+    std::string profileToGappedSequence(const ProfileMatrix& profile);
+    seq_io::SeqRecord reverseComplementRecord(const seq_io::SeqRecord& rec);
 
 
     // DNA 字符映射到 0..4（A/C/G/T/N，大小写不敏感；其他字符按 N）
-    static constexpr uint8_t ScoreChar2Idx[256] = {
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 0-15
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 16-31
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 32-47 (空格等)
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 48-63 (数字)
-        4,0,4,1,4,4,4,2,4,4,4,4,4,4,4,4,  // 64-79  (@,A,B,C,D,E,F,G,H,I,J,K,L,M,N,O)
-        4,4,4,4,3,4,4,4,4,4,4,4,4,4,4,4,  // 80-95  (P,Q,R,S,T,U,V,W,X,Y,Z,...)
-        4,0,4,1,4,4,4,2,4,4,4,4,4,4,4,4,  // 96-111 (`,a,b,c,d,e,f,g,h,i,j,k,l,m,n,o)
-        4,4,4,4,3,4,4,4,4,4,4,4,4,4,4,4,  // 112-127(p,q,r,s,t,u,v,w,x,y,z,...)
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 128-143
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 144-159
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 160-175
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 176-191
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 192-207
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 208-223
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,  // 224-239
-        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4   // 240-255
-    };
-
+    extern const uint8_t ScoreChar2Idx[256];
+    // TODO 增加用户自定义矩阵
     // DNA5 替换矩阵（A/C/G/T/N）：match=+5，mismatch=-4，涉及 N 为 0。
     // 该矩阵需配合 KSW_EZ_GENERIC_SC 使用。
-    static constexpr int8_t dna5_simd_mat[25] = {
-        // A   C   G   T   N
-        5, -4, -4, -4,  0,  // A (i=0)
-       -4,  5, -4, -4,  0,  // C (i=1)
-       -4, -4,  5, -4,  0,  // G (i=2)
-       -4, -4, -4,  5,  0,  // T (i=3)
-        0,  0,  0,  0,  0   // N (i=4)
- };
+ //    static constexpr int8_t dna5_simd_mat[25] = {
+ //        // A   C   G   T   N
+ //        5, -4, -4, -4,  0,  // A (i=0)
+ //       -4,  5, -4, -4,  0,  // C (i=1)
+ //       -4, -4,  5, -4,  0,  // G (i=2)
+ //       -4, -4, -4,  5,  0,  // T (i=3)
+ //        0,  0,  0,  0,  0   // N (i=4)
+ // };
+     // mafft 风格
+	extern const int8_t dna5_simd_mat[25];
 
     // KSW2 参数配置（默认值与当前实现一致）
     struct AlignConfig {
         const int8_t* mat = dna5_simd_mat;  // 5x5 替换矩阵（扁平化）
         int alphabet_size = 5;              // DNA5
-        int gap_open = 6;                   // gap open 罚分
+        int gap_open = 10;                   // gap open 罚分
         int gap_extend = 2;                 // gap extend 罚分
         int end_bonus = 0;                  // 末端奖励
         int zdrop = -1;                     // -1 表示默认/不启用
-        int band_width = -1;                // -1 表示不限制带宽
-        int flag = KSW_EZ_GENERIC_SC | KSW_EZ_RIGHT;
+        int band_width = AUTO_BAND_WIDTH;   // AUTO_BAND_WIDTH 自动估计；-1 表示不限制带宽
+        int flag = KSW_EZ_RIGHT;
     };
 
 
     // 自动估计 band 宽度：长度差异过大时返回 -1（禁用 band）
     //------------------------------------------- 带宽估计
-    inline int auto_band(int qlen, int tlen,
-        double indel_rate = 0.1,
-        int    margin = 200)
-    {
-        // 长度差异过大时不适合 banded DP
-        if ((double)std::abs(qlen - tlen) / (double)std::max(qlen, tlen) > 0.5)
-        {
-            return -1;
-        }
-
-        // 经验公式：预期 indel 规模 + 安全边距
-        return margin + static_cast<int>(indel_rate * (qlen + tlen / 2));
-
-    }
+    int auto_band(int qlen, int tlen, double indel_rate = 0.1, int margin = 200);
 
     // 对齐接口统一返回 CIGAR；输入允许 A/C/G/T/N（其他字符按 N 处理）
 
@@ -162,21 +145,37 @@ namespace align {
     using AlignFunc = std::function<cigar::Cigar_t(const std::string&, const std::string&)>;
 
     // 基于锚点的分段全局比对；锚点无效时退化为普通全局比对
+    cigar::Cigar_t globalAlignMM2(const std::string& ref,
+                                  const std::string& query,
+                                  const anchor::Anchors& anchors,
+                                  align::AlignConfig cfg = align::AlignConfig{});
+
     cigar::Cigar_t globalAlignSeq2Seq(const std::string& ref,
                                       const std::string& query,
-                                      const anchor::Anchors& anchors);
+                                      const anchor::Anchors& anchors,
+                                      align::AlignConfig cfg = align::AlignConfig{});
 
     cigar::Cigar_t globalAlignSeq2Profile(const ProfileMatrix& ref,
                                     const std::string& ref_string,
                                   const std::string& query,
-                                  const anchor::Anchors& anchors);
+                                  const anchor::Anchors& anchors,
+                                  align::AlignConfig cfg = align::AlignConfig{});
 
     cigar::Cigar_t globalAlignSeq2ProfileParallel(const ProfileMatrix& ref,
                                     const std::string& ref_string,
                                   const std::string& query,
                                   const anchor::Anchors& anchors,
-                                  int thread = 1);
+                                  int thread = 1,
+                                  align::AlignConfig cfg = align::AlignConfig{});
 
+
+    struct MergeOptions {
+        std::size_t batch_size = 25600;
+        bool keep_length = false;
+        bool write_reference = true;
+        FilePath insertion_tsv_path;
+        InsertionMergeMode insertion_merge_mode = InsertionMergeMode::reference_guided;
+    };
 
     // 参考序列比对器：批量比对 query，并合并生成最终 MSA
     class RefAligner
@@ -184,11 +183,20 @@ namespace align {
         public:
         // 直接参数构造：读取参考、构建索引、准备共识序列
         RefAligner(const FilePath& work_dir, const FilePath& ref_fasta_path,
-                   int kmer_size = 21, int window_size = 10,
-                   int sketch_size = 2000, bool noncanonical = true,
-                   int threads = 1, std::string msa_cmd = "",
-                   bool keep_length = false,
-                   bool enable_wfa = false);
+                   int minimizer_size = 19, int minimizer_window = 19,
+                   int sketch_size = 30000, int sketch_kmer_size = 10,
+                   bool noncanonical = true,
+                   int threads = 1, std::string msa_tool = "",
+                   bool enable_wfa = false,
+                   const FilePath& reference_msa_path = FilePath(),
+                   std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX,
+                   int gap_open = 10,
+                   int gap_extend = 2,
+                   int band_width = AUTO_BAND_WIDTH,
+                   int min_profile_references = 15,
+                   int max_profile_references = 40,
+                   double min_profile_reference_similarity = 0.7,
+                   bool auto_strand = false);
 
         // Options 构造（推荐）
         RefAligner(const Options& opt, const FilePath& ref_fasta_path);
@@ -200,6 +208,7 @@ namespace align {
         void alignSeq2Profile(const FilePath& qry_fasta_path, std::size_t batch_size = 25600);
 
         // 合并 SAM 与中间结果，输出最终 MSA
+        void mergeAlignedResults(const FilePath output, const MergeOptions& options);
         void mergeAlignedResults(const FilePath output, std::size_t batch_size = 25600);
 
         // 全局比对统一入口（保留 similarity/minimizer 参数以兼容后续策略）
@@ -213,6 +222,7 @@ namespace align {
                                     const std::string& ref_string,
                                    const std::string& query,
                                    double similarity,
+                                   int thread = 0,
                                    const SeedHits* ref_minimizer = nullptr,
                                    const SeedHits* query_minimizer = nullptr) const;
 
@@ -223,6 +233,10 @@ namespace align {
 
 
         private:
+        void loadReference(const FilePath& ref_fasta_path, const FilePath& reference_msa_path);
+        void rebuildNormalizedReferenceProfiles();
+        void refreshNormalizedReferenceProfiles(const std::vector<std::string>& ref_ids);
+
         // 单条 query 比对并写入 SAM（每线程 writer 由调用方管理）
         void alignOneQueryToRef(const seq_io::SeqRecord& q,
                                seq_io::SeqWriter& out,
@@ -232,13 +246,17 @@ namespace align {
                                seq_io::SeqWriter& out,
                                seq_io::SeqWriter& out_insertion,
                                cigar::Cigar_t& out_cigar,
-                               int& out_ref_idx) const;
+                               std::vector<std::string>& out_ref_ids,
+                               seq_io::SeqRecord& out_profile_query,
+                               int thread = 0) const;
 
         // 根据一个 chunk 的对齐结果增量更新 profile 计数（不改变 profile 形状）
         void updateProfilesFromChunk(
             const std::vector<seq_io::SeqRecord>& chunk,
             const std::vector<cigar::Cigar_t>& cigar_chunk,
-            const std::vector<int>& ref_idx_chunk);
+            const std::vector<std::vector<std::string>>& ref_ids_chunk);
+
+        std::vector<mash::SketchMatch> selectProfileMatches(const mash::Sketch& query_sketch) const;
 
         // 将单条 query 按 CIGAR 投影到 profile 列并累加碱基计数，成功返回 true
         static bool applyCigarToProfile(
@@ -250,55 +268,6 @@ namespace align {
         void writeSamRecord(const seq_io::SeqRecord& q, const cigar::Cigar_t& cigar,
                            std::string_view ref_name, seq_io::SeqWriter& out) const;
 
-        // 共识 + SAM 合并为 FASTA
-        // keep=false：原样写 query；keep=true：按 CIGAR 投影（当前会去除 query 的 I）
-        std::size_t mergeConsensusAndSamToFasta(
-            const std::vector<FilePath>& sam_paths,
-            const FilePath& fasta_path,
-            std::unordered_map<std::string, cigar::Cigar_t> ref_aligned_map,
-            bool keep = false,
-            std::size_t line_width = 80
-            ) const;
-
-        // 单条 SAM 转 FASTA，并按 CIGAR 调整长度
-        void convertSamToFastaRecord(
-            const seq_io::SamRecord& sam_rec,
-            seq_io::SeqRecord& fasta_rec,
-            const std::unordered_map<std::string, cigar::Cigar_t>& ref_aligned_map,
-            std::size_t estimated_final_length) const;
-
-        // 处理插入序列：SAM -> FASTA -> 可选外部 MSA
-        FilePath processInsertionSequences(
-            const FilePath& result_dir,
-            const FilePath& aligned_insertion_fasta,
-            std::unordered_map<std::string, cigar::Cigar_t>& ref_aligned_map) const;
-
-        // 写入共识与参考序列
-        std::size_t writeConsensusAndReferences(
-            seq_io::SeqWriter& final_writer,
-            const FilePath& consensus_aligned_file,
-            ProgressBar& progress) const;
-
-        // 写入插入序列（跳过首条共识）
-        std::size_t writeInsertionSequences(
-            seq_io::SeqWriter& final_writer,
-            const FilePath& aligned_insertion_fasta,
-            std::size_t& expected_length,
-            bool& length_initialized,
-            ProgressBar& progress) const;
-
-        // 批量读取 SAM，并行转换 FASTA，串行写出
-        void processSamFileBatch(
-            seq_io::SamReader& sam_reader,
-            const std::size_t batch_size,
-            seq_io::SeqWriter& final_writer,
-            const std::unordered_map<std::string, cigar::Cigar_t>& ref_aligned_map,
-            std::size_t estimated_final_length,
-            std::size_t& expected_length,
-            bool& length_initialized,
-            std::size_t& seq_count,
-            ProgressBar& progress) const;
-
         // 解析对齐参考 FASTA：输出每条序列 CIGAR（M/D）与参考 gap 列标记
         // 不做碱基一致性校验，保持现有逻辑。
         void parseAlignedReferencesToCigar(
@@ -306,6 +275,7 @@ namespace align {
             std::unordered_map<std::string, cigar::Cigar_t>& out_ref_aligned_map,
             std::vector<bool>& out_ref_gap_pos) const;
 
+        AlignConfig makeAlignConfig() const;
 
         // 私有成员
 
@@ -313,29 +283,42 @@ namespace align {
         FilePath work_dir;
 
         // 参考序列与索引
-        seq_io::SeqRecords ref_sequences;   // 参考序列集合
-        mash::Sketches ref_sketch;          // 每条参考序列的 MinHash sketch
-        std::vector<SeedHits> ref_minimizers;  // 每条参考序列的 minimizer 索引
-        std::vector<ProfileMatrix> ref_profile;    // 参考序列的碱基计数 profile（按列存储，便于向量化）
+        seq_io::SeqRecordMap ref_sequences;   // 参考序列集合
+        mash::SketchMap ref_sketch;          // 每条参考序列的 MinHash sketch
+        mash::SketchBitsetIndex ref_sketch_bitset_index;
+        ProfileMatrixMap ref_profile;    // 参考序列的碱基计数 profile（按列存储，便于向量化）
+        ProfileMatrixMap normalized_ref_profile; // 等权归一化后的 profile cache
 
         // 共识序列与索引（构造时预计算，避免重复计算）
+        seq_io::SeqRecord consensus_gap_seq;
         seq_io::SeqRecord consensus_seq;
         mash::Sketch consensus_sketch;
         SeedHits consensus_minimizer;
+        SeedHits consensus_gap_minimizer;
         ProfileMatrix consensus_profile;
 
         // MinHash / minimizer 参数
-        int kmer_size = 21;
-        int window_size = 10;
+        int minimizer_size = 21;
+        int minimizer_window = 10;
         int sketch_size = 2000;
+        // 仅用于 profile reference sketch 构建的 k-mer 大小，与 minimizer 的 minimizer_size 解耦。
+        int sketch_kmer_size = 10;
         int random_seed = 42;
 
         // 并行与外部工具配置
         int threads = 1;            // OpenMP 线程数（<=0 时由运行时决定）
-        std::string msa_cmd;        // 外部 MSA 命令模板
+        std::string msa_tool;        // 外部 MSA 命令模板
 
-        bool keep_length = false; // true：裁剪“共识为 gap”的列
         bool enable_wfa = false;  // true：允许使用 WFA 路径
+        bool profile_alignment_mode = false; // true：本轮 SAM 以 profile/带 gap 共识坐标为参考
+        std::array<int8_t, 25> score_matrix = DEFAULT_DNA5_SCORE_MATRIX;
+        int gap_open = 10;
+        int gap_extend = 2;
+        int band_width = AUTO_BAND_WIDTH;
+        int min_profile_references = 15;
+        int max_profile_references = 40;
+        double min_profile_reference_similarity = 0.7;
+        bool auto_strand = false;
 
         // 是否考虑反向互补
         bool noncanonical = true;

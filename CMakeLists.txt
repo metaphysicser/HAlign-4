@@ -30,9 +30,11 @@ add_executable(halign4
         src/mash/hash.cpp
         src/mash/xxhash.c
         src/mash/mash.cpp
+        src/mash/mash_bitset.cpp
         src/consensus/selector.cpp
         src/consensus/consensus.cpp
         src/align/ref_aligner.cpp
+        src/align/ref_merger.cpp
         src/align/ksw2_extz2_sse.c
         src/align/ksw2_gg2_sse.c
         src/align/psw_gg3_sse.c

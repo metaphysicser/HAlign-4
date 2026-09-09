@@ -7,6 +7,7 @@
 #include <vector>
 #include "hash.h"
 #include "bloom_filter.hpp"
+#include <unordered_map>
 
 namespace mash
 {
@@ -61,6 +62,45 @@ namespace mash
         bool empty() const noexcept { return hashes.empty(); }
     };
     using Sketches = std::vector<Sketch>;
+	using SketchMap = std::unordered_map<std::string, Sketch>;  // id -> sketch
+
+    struct SketchMatch
+    {
+        std::string id;
+        double similarity = 0.0;
+        bool found = false;
+    };
+
+    class SketchBitsetIndex
+    {
+    public:
+        void build(const SketchMap& sketches, bool drop_hashes_present_in_all_refs = true);
+
+        bool empty() const noexcept { return ids_.empty(); }
+        bool usable() const noexcept { return !ids_.empty() && words_per_sketch_ != 0; }
+        std::size_t size() const noexcept { return ids_.size(); }
+        std::size_t dictionarySize() const noexcept { return dictionary_.size(); }
+
+        SketchMatch findBest(const Sketch& query) const;
+        std::vector<SketchMatch> findAll(const Sketch& query) const;
+        std::vector<SketchMatch> findTopK(const Sketch& query,
+                                          std::size_t min_count,
+                                          std::size_t max_count,
+                                          double similarity_ratio) const;
+
+    private:
+        std::size_t k_ = 0;
+        bool has_k_ = false;
+        std::size_t words_per_sketch_ = 0;
+        std::vector<hash_t> dictionary_;
+        std::unordered_map<hash_t, std::uint32_t> hash_to_bit_;
+        std::vector<std::string> ids_;
+        std::vector<std::uint32_t> sketch_hash_counts_;
+        std::vector<std::uint64_t> bitsets_;
+    };
+
+    std::vector<hash_t> commonHashesAcrossSketches(const SketchMap& sketches);
+    std::size_t removeCommonHashesFromSketches(SketchMap& sketches);
 
     // ------------------------------------------------------------
     // Construction

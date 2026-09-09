@@ -6,6 +6,8 @@
 #include <cereal/cereal.hpp>
 #include <cereal/types/vector.hpp>
 #include <cereal/types/string.hpp>
+#include <string>
+#include <vector>
 
 
 // ---------------------------------------------------------------------------
@@ -118,6 +120,17 @@ namespace consensus
         }
     };
 
+    // ConsensusResult：一次 MSA 统计同时产出的三类数据。
+    // - gap_seq: 保留 gap-majority 列的共识序列，用于后续按 MSA 列坐标比对。
+    // - seq: 删除 gap_seq 中 gap 后的共识序列，用于 sketch/相似度等纯序列逻辑。
+    // - counts: 每列计数，可用于构建 ProfileMatrix。
+    struct ConsensusResult
+    {
+        std::string gap_seq;
+        std::string seq;
+        ConsensusJson counts;
+    };
+
     // -------------------- 字符到索引的映射表 --------------------
     // 目的：在统计过程中需要把字符快速映射为 0..6 的索引（便于数组索引和分支最小化），
     // 使用一个 256 大小的查表（ASCII/unsigned char 范围）以常量时间完成映射。
@@ -158,6 +171,10 @@ namespace consensus
     // - 可选扩展：如果你希望在低覆盖位点返回 N，请修改策略以在总计数低于阈值时返回 'N'。
     char pickConsensusChar(const SiteCount& sc);
 
+    // pickConsensusCharWithGap：当 gap 是严格最多的类别时返回 '-'，
+    // 否则沿用 pickConsensusChar 的非 gap 共识选择策略。
+    char pickConsensusCharWithGap(const SiteCount& sc);
+
     // writeConsensusFasta：将最终共识序列写入 FASTA（仅写一条 >consensus）
     // 注意：函数实现应保证输出目录存在（调用前可使用 file_io::ensureParentDirExists）
     void writeConsensusFasta(const FilePath& out_fasta, const std::string& seq);
@@ -166,6 +183,16 @@ namespace consensus
     void writeCountsJson(const FilePath& out_json, const ConsensusJson& cj);
 
     // -------------------- 共识生成接口 --------------------
+    // generateConsensusResult：给定已对齐 FASTA，统计每个位点并同时生成：
+    // 1) 带 gap 的共识序列；2) 去 gap 的共识序列；3) 每列计数。
+    // out_fasta 写出去 gap 共识序列，保持与历史 consensus.fasta 用途兼容。
+    ConsensusResult generateConsensusResult(const FilePath& aligned_fasta,
+                                            const FilePath& out_fasta,
+                                            const FilePath& out_json,
+                                            std::uint64_t seq_limit,
+                                            int thread,
+                                            size_t batch_size = 4096);
+
     // generateConsensusSequence：给定已对齐的 FASTA 文件，统计每个位点并生成共识序列。
     // 参数说明：
     // - aligned_fasta: 已对齐的 FASTA（每个序列长度应一致为 aln_len）
@@ -173,7 +200,7 @@ namespace consensus
     // - out_json: 写出统计计数的 JSON 文件路径
     // - seq_limit: 若非 0，可限制处理的序列数量（用于调试/抽样）
     // - thread: 期望使用的线程数（传入后函数会在内部设置 OpenMP 线程数或用于线程池规模）
-    // 返回值：生成的共识序列字符串（便于内存中进一步处理或测试断言）
+    // 返回值：去 gap 共识序列字符串（便于内存中进一步处理或测试断言）
     // 性能提示：实现应该支持按批读取、线程本地累加(避免频繁原子更新)、SoA 布局以便向量化，以及合并阶段的并行化。
     // 另外建议在实现中记录耗时以便基准分析。
     std::string generateConsensusSequence(const FilePath& aligned_fasta,
